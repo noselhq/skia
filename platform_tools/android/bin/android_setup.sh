@@ -1,4 +1,10 @@
 #!/bin/bash
+###############################################################################
+# Copyright 2015 Google Inc.
+#
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+###############################################################################
 #
 # android_setup.sh: Sets environment variables used by other Android scripts.
 
@@ -23,6 +29,13 @@ while (( "$#" )); do
     shift
   elif [[ "$1" == "--release" ]]; then
     BUILDTYPE=Release
+  elif [[ "$1" == "--clang" ]]; then
+    USE_CLANG="true"
+    export GYP_DEFINES="skia_clang_build=1 $GYP_DEFINES"
+  elif [[ "$1" == "--logcat" ]]; then
+    LOGCAT=1
+  elif [[ "$1" == "--verbose" ]]; then
+    VERBOSE="true"
   else
     APP_ARGS=("${APP_ARGS[@]}" "${1}")
   fi
@@ -57,6 +70,11 @@ if [ -z "$ANDROID_SDK_ROOT" ]; then
   fi
 fi
 
+if [ -z "$ANDROID_HOME" ]; then
+  echo "ANDROID_HOME not set so we are setting it to a default value of ANDROID_SDK_ROOT"
+  exportVar ANDROID_HOME $ANDROID_SDK_ROOT
+fi
+
 # check to see that gclient sync ran successfully
 THIRD_PARTY_EXTERNAL_DIR=${SCRIPT_DIR}/../third_party/externals
 if [ ! -d "$THIRD_PARTY_EXTERNAL_DIR" ]; then
@@ -87,71 +105,48 @@ setup_device() {
       TARGET_DEVICE=$(cat .android_config)
       verbose "no target device (-d), using ${TARGET_DEVICE} from most recent build"
     else
-      TARGET_DEVICE="arm_v7_thumb"
+      TARGET_DEVICE="arm_v7_neon"
       verbose "no target device (-d), using ${TARGET_DEVICE}"
     fi
   fi
 
   case $TARGET_DEVICE in
-    nexus_s)
-      DEFINES="${DEFINES} skia_arch_type=arm arm_neon=1 arm_version=7 arm_thumb=1"
-      DEFINES="${DEFINES} skia_resource_cache_mb_limit=24"
+    arm)
+      DEFINES="${DEFINES} skia_arch_type=arm arm_neon=0"
       ANDROID_ARCH="arm"
       ;;
-    nexus_4 | nexus_7 | nexus_10)
-      DEFINES="${DEFINES} skia_arch_type=arm arm_neon=1 arm_version=7 arm_thumb=1"
+    arm_v7 | xoom)
+      DEFINES="${DEFINES} skia_arch_type=arm arm_neon_optional=1 arm_version=7"
       ANDROID_ARCH="arm"
       ;;
-    xoom)
-      DEFINES="${DEFINES} skia_arch_type=arm arm_neon=0 arm_version=7 arm_thumb=1"
+    arm_v7_neon | nexus_4 | nexus_5 | nexus_6 | nexus_7 | nexus_10)
+      DEFINES="${DEFINES} skia_arch_type=arm arm_neon=1 arm_version=7"
       ANDROID_ARCH="arm"
       ;;
-    galaxy_nexus)
-      DEFINES="${DEFINES} skia_arch_type=arm arm_neon=1 arm_version=7 arm_thumb=1"
-      DEFINES="${DEFINES} skia_resource_cache_mb_limit=32"
-      ANDROID_ARCH="arm"
+    arm64 | nexus_9)
+      DEFINES="${DEFINES} skia_arch_type=arm64 arm_version=8"
+      ANDROID_ARCH="arm64"
       ;;
-    intel_rhb | razr_i | x86)
-      DEFINES="${DEFINES} skia_arch_type=x86 skia_arch_width=32"
-      DEFINES="${DEFINES} skia_resource_cache_mb_limit=32"
+    x86)
+      DEFINES="${DEFINES} skia_arch_type=x86"
       ANDROID_ARCH="x86"
       ;;
     x86_64 | x64)
-      DEFINES="${DEFINES} skia_arch_type=x86 skia_arch_width=64"
+      DEFINES="${DEFINES} skia_arch_type=x86_64"
       ANDROID_ARCH="x86_64"
       ;;
-    arm_v7)
-      DEFINES="${DEFINES} skia_arch_type=arm arm_neon_optional=1 arm_version=7 arm_thumb=0"
-      ANDROID_ARCH="arm"
-      ;;
-    arm_v7_thumb | nvidia_logan)
-      DEFINES="${DEFINES} skia_arch_type=arm arm_neon_optional=1 arm_version=7 arm_thumb=1"
-      ANDROID_ARCH="arm"
-      ;;
-    arm)
-      DEFINES="${DEFINES} skia_arch_type=arm arm_neon=0 arm_thumb=0"
-      ANDROID_ARCH="arm"
-      ;;
-    arm_thumb)
-      DEFINES="${DEFINES} skia_arch_type=arm arm_neon=0 arm_thumb=1"
-      ANDROID_ARCH="arm"
-      ;;
-    arm64)
-      DEFINES="${DEFINES} skia_arch_type=arm64 skia_arch_width=64"
-      ANDROID_ARCH="arm64"
-      ;;
     mips)
-      DEFINES="${DEFINES} skia_arch_type=mips skia_arch_width=32"
+      DEFINES="${DEFINES} skia_arch_type=mips32"
       DEFINES="${DEFINES} skia_resource_cache_mb_limit=32"
       ANDROID_ARCH="mips"
       ;;
     mips_dsp2)
-      DEFINES="${DEFINES} skia_arch_type=mips skia_arch_width=32"
+      DEFINES="${DEFINES} skia_arch_type=mips32"
       DEFINES="${DEFINES} mips_arch_variant=mips32r2 mips_dsp=2"
       ANDROID_ARCH="mips"
       ;;
     mips64)
-      DEFINES="${DEFINES} skia_arch_type=mips skia_arch_width=64"
+      DEFINES="${DEFINES} skia_arch_type=mips64"
       ANDROID_ARCH="mips64"
       ;;
     *)
@@ -176,6 +171,7 @@ setup_device() {
   source $SCRIPT_DIR/utils/setup_toolchain.sh
 
   DEFINES="${DEFINES} android_toolchain=${TOOLCHAIN_TYPE}"
+  DEFINES="${DEFINES} android_buildtype=${BUILDTYPE}"
   exportVar GYP_DEFINES "$DEFINES $GYP_DEFINES"
 
   SKIA_SRC_DIR=$(cd "${SCRIPT_DIR}/../../.."; pwd)
@@ -193,16 +189,15 @@ adb_pull_if_needed() {
   ANDROID_SRC="$1"
   HOST_DST="$2"
 
-  if [ -d $HOST_DST ];
-  then
-    HOST_DST="${HOST_DST}/$(basename ${ANDROID_SRC})"
-  fi
-
-
   if [ -f $HOST_DST ];
   then
-    #get the MD5 for dst and src
-    ANDROID_MD5=`$ADB $DEVICE_SERIAL shell md5 $ANDROID_SRC`
+    #get the MD5 for dst and src depending on OS and/or OS revision
+    ANDROID_MD5_SUPPORT=`$ADB $DEVICE_SERIAL shell ls -ld /system/bin/md5`
+    if [ "${ANDROID_MD5_SUPPORT:0:15}" != "/system/bin/md5" ]; then
+      ANDROID_MD5=`$ADB $DEVICE_SERIAL shell md5 $ANDROID_DST`
+    else
+      ANDROID_MD5=`$ADB $DEVICE_SERIAL shell md5sum $ANDROID_DST`
+    fi
     if [ $(uname) == "Darwin" ]; then
       HOST_MD5=`md5 -q $HOST_DST`
     else
@@ -239,8 +234,14 @@ adb_push_if_needed() {
 
   ANDROID_LS=`$ADB $DEVICE_SERIAL shell ls -ld $ANDROID_DST`
   if [ "${ANDROID_LS:0:1}" == "-" ]; then
-    #get the MD5 for dst and src
-    ANDROID_MD5=`$ADB $DEVICE_SERIAL shell md5 $ANDROID_DST`
+    #get the MD5 for dst and src depending on OS and/or OS revision
+    ANDROID_MD5_SUPPORT=`$ADB $DEVICE_SERIAL shell ls -ld /system/bin/md5`
+    if [ "${ANDROID_MD5_SUPPORT:0:15}" != "/system/bin/md5" ]; then
+      ANDROID_MD5=`$ADB $DEVICE_SERIAL shell md5 $ANDROID_DST`
+    else
+      ANDROID_MD5=`$ADB $DEVICE_SERIAL shell md5sum $ANDROID_DST`
+    fi
+
     if [ $(uname) == "Darwin" ]; then
       HOST_MD5=`md5 -q $HOST_SRC`
     else

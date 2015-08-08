@@ -1,16 +1,17 @@
-
 /*
  * Copyright 2011 Google Inc.
  *
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
+
 #include "SampleCode.h"
+#include "SkCanvas.h"
 #include "SkColorPriv.h"
 #include "SkGradientShader.h"
-#include "SkView.h"
-#include "SkCanvas.h"
+#include "SkPath.h"
 #include "SkUtils.h"
+#include "SkView.h"
 
 static void draw_rect(SkCanvas* canvas, const SkRect& r, const SkPaint& p) {
     canvas->drawRect(r, p);
@@ -57,11 +58,10 @@ static SkBitmap make_bitmap() {
     for (int i = 0; i < 256; i++) {
         c[i] = SkPackARGB32(0xFF, i, 0, 0);
     }
-    SkColorTable* ctable = new SkColorTable(c, 256, kOpaque_SkAlphaType);
+    SkColorTable* ctable = new SkColorTable(c, 256);
 
     SkBitmap bm;
-    bm.allocPixels(SkImageInfo::Make(256, 32, kIndex_8_SkColorType,
-                                     kPremul_SkAlphaType),
+    bm.allocPixels(SkImageInfo::Make(256, 32, kIndex_8_SkColorType, kPremul_SkAlphaType),
                    NULL, ctable);
     ctable->unref();
 

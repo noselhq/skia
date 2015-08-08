@@ -10,9 +10,7 @@
 #include "SkRegion.h"
 #include "SkShader.h"
 #include "SkUtils.h"
-#include "SkColorPriv.h"
 #include "SkColorFilter.h"
-#include "SkTypeface.h"
 
 // effects
 #include "SkGradientShader.h"
@@ -38,7 +36,7 @@ static void setup(SkPaint* paint, const SkBitmap& bm, bool filter,
                   SkShader::TileMode tmx, SkShader::TileMode tmy) {
     SkShader* shader = SkShader::CreateBitmapShader(bm, tmx, tmy);
     paint->setShader(shader)->unref();
-    paint->setFilterLevel(filter ? SkPaint::kLow_FilterLevel : SkPaint::kNone_FilterLevel);
+    paint->setFilterQuality(filter ? kLow_SkFilterQuality : kNone_SkFilterQuality);
 }
 
 static const SkColorType gColorTypes[] = {
@@ -61,7 +59,7 @@ protected:
         kNPOTSize = 21,
     };
 
-    SkString onShortName() {
+    SkString onShortName() override {
         SkString name("tilemodes");
         if (!fPowerOfTwoSize) {
             name.append("_npot");
@@ -69,16 +67,16 @@ protected:
         return name;
     }
 
-    SkISize onISize() { return SkISize::Make(880, 560); }
+    SkISize onISize() override { return SkISize::Make(880, 560); }
 
-    virtual void onOnceBeforeDraw() SK_OVERRIDE {
+    void onOnceBeforeDraw() override {
         int size = fPowerOfTwoSize ? kPOTSize : kNPOTSize;
         for (size_t i = 0; i < SK_ARRAY_COUNT(gColorTypes); i++) {
             makebm(&fTexture[i], gColorTypes[i], size, size);
         }
     }
 
-    virtual void onDraw(SkCanvas* canvas) SK_OVERRIDE {
+    void onDraw(SkCanvas* canvas) override {
 
         int size = fPowerOfTwoSize ? kPOTSize : kNPOTSize;
 
@@ -100,6 +98,7 @@ protected:
                 SkPaint p;
                 SkString str;
                 p.setAntiAlias(true);
+                sk_tool_utils::set_portable_typeface(&p);
                 p.setDither(true);
                 str.printf("[%s,%s]", gModeNames[kx], gModeNames[ky]);
 
@@ -139,6 +138,7 @@ protected:
                     SkPaint p;
                     SkString str;
                     p.setAntiAlias(true);
+                    sk_tool_utils::set_portable_typeface(&p);
                     str.printf("%s, %s", gConfigNames[i], gFilterNames[j]);
                     canvas->drawText(str.c_str(), str.size(), x, y + r.height() * 2 / 3, p);
                 }
@@ -166,7 +166,7 @@ static SkShader* make_grad(SkShader::TileMode tx, SkShader::TileMode ty) {
     SkPoint pts[] = { { 0, 0 }, { SkIntToScalar(gWidth), SkIntToScalar(gHeight)} };
     SkPoint center = { SkIntToScalar(gWidth)/2, SkIntToScalar(gHeight)/2 };
     SkScalar rad = SkIntToScalar(gWidth)/2;
-    SkColor colors[] = { 0xFFFF0000, 0xFF0044FF };
+    SkColor colors[] = { 0xFFFF0000, sk_tool_utils::color_to_565(0xFF0044FF) };
 
     int index = (int)ty;
     switch (index % 3) {
@@ -192,17 +192,14 @@ public:
     }
 
 protected:
-    virtual uint32_t onGetFlags() const SK_OVERRIDE {
-        return kSkipTiled_Flag;
-    }
 
-    SkString onShortName() {
+    SkString onShortName() override {
         return fName;
     }
 
-    SkISize onISize() { return SkISize::Make(880, 560); }
+    SkISize onISize() override { return SkISize::Make(880, 560); }
 
-    virtual void onDraw(SkCanvas* canvas) {
+    void onDraw(SkCanvas* canvas) override {
         canvas->scale(SkIntToScalar(3)/2, SkIntToScalar(3)/2);
 
         const SkScalar w = SkIntToScalar(gWidth);
@@ -221,6 +218,7 @@ protected:
 
         SkPaint p;
         p.setAntiAlias(true);
+        sk_tool_utils::set_portable_typeface(&p);
         p.setTextAlign(SkPaint::kCenter_Align);
 
         for (size_t kx = 0; kx < SK_ARRAY_COUNT(gModes); kx++) {

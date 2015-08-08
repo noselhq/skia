@@ -9,23 +9,24 @@
 #ifndef GrGLCaps_DEFINED
 #define GrGLCaps_DEFINED
 
-#include "GrDrawTargetCaps.h"
-#include "GrGLStencilBuffer.h"
+#include "GrCaps.h"
+#include "glsl/GrGLSL.h"
+#include "GrGLStencilAttachment.h"
+#include "SkChecksum.h"
+#include "SkTHash.h"
 #include "SkTArray.h"
-#include "SkTDArray.h"
 
 class GrGLContextInfo;
+class GrGLSLCaps;
 
 /**
  * Stores some capabilities of a GL context. Most are determined by the GL
  * version and the extensions string. It also tracks formats that have passed
  * the FBO completeness test.
  */
-class GrGLCaps : public GrDrawTargetCaps {
+class GrGLCaps : public GrCaps {
 public:
-    SK_DECLARE_INST_COUNT(GrGLCaps)
-
-    typedef GrGLStencilBuffer::Format StencilFormat;
+    typedef GrGLStencilAttachment::Format StencilFormat;
 
     /**
      * The type of MSAA for FBOs supported. Different extensions have different
@@ -64,18 +65,12 @@ public:
          * GL_MAX_SAMPLES value.
          */
         kES_EXT_MsToTexture_MSFBOType,
+        /**
+         * GL_NV_framebuffer_mixed_samples.
+         */
+        kMixedSamples_MSFBOType,
 
-        kLast_MSFBOType = kES_EXT_MsToTexture_MSFBOType
-    };
-
-    enum FBFetchType {
-        kNone_FBFetchType,
-        /** GL_EXT_shader_framebuffer_fetch */
-        kEXT_FBFetchType,
-        /** GL_NV_shader_framebuffer_fetch */
-        kNV_FBFetchType,
-
-        kLast_FBFetchType = kNV_FBFetchType
+        kLast_MSFBOType = kMixedSamples_MSFBOType
     };
 
     enum InvalidateFBType {
@@ -96,25 +91,11 @@ public:
     };
 
     /**
-     * Creates a GrGLCaps that advertises no support for any extensions,
-     * formats, etc. Call init to initialize from a GrGLContextInfo.
-     */
-    GrGLCaps();
-
-    GrGLCaps(const GrGLCaps& caps);
-
-    GrGLCaps& operator = (const GrGLCaps& caps);
-
-    /**
-     * Resets the caps such that nothing is supported.
-     */
-    virtual void reset() SK_OVERRIDE;
-
-    /**
      * Initializes the GrGLCaps to the set of features supported in the current
      * OpenGL context accessible via ctxInfo.
      */
-    bool init(const GrGLContextInfo& ctxInfo, const GrGLInterface* glInterface);
+    GrGLCaps(const GrContextOptions& contextOptions, const GrGLContextInfo& ctxInfo,
+             const GrGLInterface* glInterface);
 
     /**
      * Call to note that a color config has been verified as a valid color
@@ -141,7 +122,7 @@ public:
      */
     void markColorConfigAndStencilFormatAsVerified(
                     GrPixelConfig config,
-                    const GrGLStencilBuffer::Format& format);
+                    const GrGLStencilAttachment::Format& format);
 
     /**
      * Call to check whether color config / stencil format pair has already
@@ -149,7 +130,7 @@ public:
      */
     bool isColorConfigAndStencilFormatVerified(
                     GrPixelConfig config,
-                    const GrGLStencilBuffer::Format& format) const;
+                    const GrGLStencilAttachment::Format& format) const;
 
     /**
      * Reports the type of MSAA FBO support.
@@ -162,7 +143,8 @@ public:
     bool usesMSAARenderBuffers() const {
         return kNone_MSFBOType != fMSFBOType &&
                kES_IMG_MsToTexture_MSFBOType != fMSFBOType &&
-               kES_EXT_MsToTexture_MSFBOType != fMSFBOType;
+               kES_EXT_MsToTexture_MSFBOType != fMSFBOType &&
+               kMixedSamples_MSFBOType != fMSFBOType;
     }
 
     /**
@@ -173,8 +155,6 @@ public:
         return kES_IMG_MsToTexture_MSFBOType == fMSFBOType ||
                kES_EXT_MsToTexture_MSFBOType == fMSFBOType;
     }
-
-    FBFetchType fbFetchType() const { return fFBFetchType; }
 
     InvalidateFBType invalidateFBType() const { return fInvalidateFBType; }
 
@@ -198,9 +178,6 @@ public:
 
     /// maximum number of texture units accessible in the fragment shader.
     int maxFragmentTextureUnits() const { return fMaxFragmentTextureUnits; }
-
-    /// maximum number of fixed-function texture coords, or zero if no fixed-function.
-    int maxFixedFunctionTextureCoords() const { return fMaxFixedFunctionTextureCoords; }
 
     /// ES requires an extension to support RGBA8 in RenderBufferStorage
     bool rgba8RenderbufferSupport() const { return fRGBA8RenderbufferSupport; }
@@ -245,6 +222,23 @@ public:
     /// Is there support for Vertex Array Objects?
     bool vertexArrayObjectSupport() const { return fVertexArrayObjectSupport; }
 
+    /// Is there support for glDraw*Instanced and glVertexAttribDivisor?
+    bool instancedDrawingSupport() const { return fInstancedDrawingSupport; }
+
+    /// Is there support for GL_EXT_direct_state_access?
+    bool directStateAccessSupport() const { return fDirectStateAccessSupport; }
+
+    /// Is there support for GL_KHR_debug?
+    bool debugSupport() const { return fDebugSupport; }
+
+    /// Is there support for ES2 compatability?
+    bool ES2CompatibilitySupport() const { return fES2CompatibilitySupport; }
+
+    /// Can we call glDisable(GL_MULTISAMPLE)?
+    bool multisampleDisableSupport() const {
+        return fMultisampleDisableSupport;
+    }
+
     /// Use indices or vertices in CPU arrays rather than VBOs for dynamic content.
     bool useNonVBOVertexAndIndexDynamicData() const {
         return fUseNonVBOVertexAndIndexDynamicData;
@@ -253,19 +247,24 @@ public:
     /// Does ReadPixels support the provided format/type combo?
     bool readPixelsSupported(const GrGLInterface* intf,
                              GrGLenum format,
-                             GrGLenum type) const;
+                             GrGLenum type,
+                             GrGLenum currFboFormat) const;
 
     bool isCoreProfile() const { return fIsCoreProfile; }
 
+    bool bindFragDataLocationSupport() const { return fBindFragDataLocationSupport; }
 
-    bool fullClearIsFree() const { return fFullClearIsFree; }
-
-    bool dropsTileOnZeroDivide() const { return fDropsTileOnZeroDivide; }
+    /**
+     * Is there support for enabling/disabling sRGB writes for sRGB-capable color attachments?
+     * If false this does not mean sRGB is not supported but rather that if it is supported
+     * it cannot be turned off for configs that support it.
+     */
+    bool srgbWriteControl() const { return fSRGBWriteControl; }
 
     /**
      * Returns a string containing the caps info.
      */
-    virtual SkString dump() const SK_OVERRIDE;
+    SkString dump() const override;
 
     /**
      * LATC can appear under one of three possible names. In order to know
@@ -280,7 +279,15 @@ public:
 
     LATCAlias latcAlias() const { return fLATCAlias; }
 
+    bool rgba8888PixelsOpsAreSlow() const { return fRGBA8888PixelsOpsAreSlow; }
+    bool partialFBOReadIsSlow() const { return fPartialFBOReadIsSlow; }
+
+    GrGLSLCaps* glslCaps() const { return reinterpret_cast<GrGLSLCaps*>(fShaderCaps.get()); }
+
 private:
+    void init(const GrContextOptions&, const GrGLContextInfo&, const GrGLInterface*);
+    bool hasPathRenderingSupport(const GrGLContextInfo&, const GrGLInterface*);
+
     /**
      * Maintains a bit per GrPixelConfig. It is used to avoid redundantly
      * performing glCheckFrameBufferStatus for the same config.
@@ -319,10 +326,17 @@ private:
     };
 
     void initFSAASupport(const GrGLContextInfo&, const GrGLInterface*);
+    void initBlendEqationSupport(const GrGLContextInfo&);
     void initStencilFormats(const GrGLContextInfo&);
     // This must be called after initFSAASupport().
-    void initConfigRenderableTable(const GrGLContextInfo&);
-    void initConfigTexturableTable(const GrGLContextInfo&, const GrGLInterface*);
+    void initConfigRenderableTable(const GrGLContextInfo&, bool srgbSupport);
+    void initConfigTexturableTable(const GrGLContextInfo&, const GrGLInterface*, bool srgbSupport);
+
+    bool doReadPixelsSupported(const GrGLInterface* intf, GrGLenum format, GrGLenum type) const;
+
+    void initShaderPrecisionTable(const GrGLContextInfo& ctxInfo,
+                                  const GrGLInterface* intf,
+                                  GrGLSLCaps* glslCaps);
 
     // tracks configs that have been verified to pass the FBO completeness when
     // used as a color attachment
@@ -337,10 +351,8 @@ private:
     int fMaxFragmentUniformVectors;
     int fMaxVertexAttributes;
     int fMaxFragmentTextureUnits;
-    int fMaxFixedFunctionTextureCoords;
 
     MSFBOType           fMSFBOType;
-    FBFetchType         fFBFetchType;
     InvalidateFBType    fInvalidateFBType;
     MapBufferType       fMapBufferType;
     LATCAlias           fLATCAlias;
@@ -359,12 +371,32 @@ private:
     bool fTwoFormatLimit : 1;
     bool fFragCoordsConventionSupport : 1;
     bool fVertexArrayObjectSupport : 1;
+    bool fInstancedDrawingSupport : 1;
+    bool fDirectStateAccessSupport : 1;
+    bool fDebugSupport : 1;
+    bool fES2CompatibilitySupport : 1;
+    bool fMultisampleDisableSupport : 1;
     bool fUseNonVBOVertexAndIndexDynamicData : 1;
     bool fIsCoreProfile : 1;
-    bool fFullClearIsFree : 1;
-    bool fDropsTileOnZeroDivide : 1;
+    bool fBindFragDataLocationSupport : 1;
+    bool fSRGBWriteControl : 1;
+    bool fRGBA8888PixelsOpsAreSlow : 1;
+    bool fPartialFBOReadIsSlow : 1;
 
-    typedef GrDrawTargetCaps INHERITED;
+    struct ReadPixelsSupportedFormat {
+        GrGLenum fFormat;
+        GrGLenum fType;
+        GrGLenum fFboFormat;
+
+        bool operator==(const ReadPixelsSupportedFormat& rhs) const {
+            return fFormat    == rhs.fFormat
+                && fType      == rhs.fType
+                && fFboFormat == rhs.fFboFormat;
+        }
+    };
+    mutable SkTHashMap<ReadPixelsSupportedFormat, bool> fReadPixelsSupportedCache;
+
+    typedef GrCaps INHERITED;
 };
 
 #endif

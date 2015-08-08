@@ -7,10 +7,7 @@
  */
 
 #include "SkBitmapHeap.h"
-
 #include "SkBitmap.h"
-#include "SkReadBuffer.h"
-#include "SkWriteBuffer.h"
 #include "SkTSearch.h"
 
 SkBitmapHeapEntry::SkBitmapHeapEntry()
@@ -109,19 +106,6 @@ SkBitmapHeap::~SkBitmapHeap() {
     fStorage.deleteAll();
     SkSafeUnref(fExternalStorage);
     fLookupTable.deleteAll();
-}
-
-SkTRefArray<SkBitmap>* SkBitmapHeap::extractBitmaps() const {
-    const int size = fStorage.count();
-    SkTRefArray<SkBitmap>* array = NULL;
-    if (size > 0) {
-        array = SkTRefArray<SkBitmap>::Create(size);
-        for (int i = 0; i < size; i++) {
-            // make a shallow copy of the bitmap
-            array->writableAt(i) = fStorage[i]->fBitmap;
-        }
-    }
-    return array;
 }
 
 void SkBitmapHeap::removeFromLRU(SkBitmapHeap::LookupEntry* entry) {

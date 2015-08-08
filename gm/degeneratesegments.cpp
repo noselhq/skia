@@ -7,6 +7,7 @@
 #include "gm.h"
 #include "SkCanvas.h"
 #include "SkPaint.h"
+#include "SkPath.h"
 #include "SkRandom.h"
 
 namespace skiagm {
@@ -21,10 +22,6 @@ protected:
         const char* fName1;
         const char* fName2;
     };
-
-    virtual uint32_t onGetFlags() const SK_OVERRIDE {
-        return kSkipTiled_Flag;
-    }
 
     SkString onShortName() {
         return SkString("degeneratesegments");
@@ -292,7 +289,6 @@ protected:
         titlePaint.setColor(SK_ColorBLACK);
         titlePaint.setAntiAlias(true);
         sk_tool_utils::set_portable_typeface(&titlePaint);
-        titlePaint.setLCDRenderText(true);
         titlePaint.setTextSize(15 * SK_Scalar1);
         const char title[] = "Random Paths Drawn Into Rectangle Clips With "
                              "Indicated Style, Fill and Linecaps, "
@@ -302,7 +298,7 @@ protected:
                             20 * SK_Scalar1,
                             titlePaint);
 
-        SkLCGRandom rand;
+        SkRandom rand;
         SkRect rect = SkRect::MakeWH(220*SK_Scalar1, 50*SK_Scalar1);
         canvas->save();
         canvas->translate(2*SK_Scalar1, 30 * SK_Scalar1); // The title
@@ -321,7 +317,7 @@ protected:
                     canvas->translate(rect.width() + 4*SK_Scalar1, 0);
                 }
 
-                SkColor color = 0xff007000;
+                SkColor color = sk_tool_utils::color_to_565(0xff007000);
                 StyleAndName style = gStyles[(rand.nextU() >> 16) % numStyles];
                 CapAndName cap = gCaps[(rand.nextU() >> 16) % numCaps];
                 FillAndName fill = gFills[(rand.nextU() >> 16) % numFills];
@@ -353,7 +349,6 @@ protected:
                 labelPaint.setColor(color);
                 labelPaint.setAntiAlias(true);
                 sk_tool_utils::set_portable_typeface(&labelPaint);
-                labelPaint.setLCDRenderText(true);
                 labelPaint.setTextSize(10 * SK_Scalar1);
                 canvas->drawText(style.fName,
                                  strlen(style.fName),

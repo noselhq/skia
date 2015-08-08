@@ -47,6 +47,7 @@ protected:
     virtual SkISize onISize() { return SkISize::Make(500, 480); }
     virtual void onDraw(SkCanvas* canvas) {
         SkPaint paint;
+        sk_tool_utils::set_portable_typeface(&paint);
         SkRect r = SkRect::MakeWH(SkIntToScalar(100), SkIntToScalar(100));
 
         canvas->clipRect(r);
@@ -65,7 +66,7 @@ private:
 };
 
 
-// Replicate chrome layout test - switching between solid & gadient text
+// Replicate chrome layout test - switching between solid & gradient text
 class ChromeGradTextGM2 : public GM {
 public:
     ChromeGradTextGM2() { }
@@ -75,6 +76,7 @@ protected:
     virtual SkISize onISize() { return SkISize::Make(500, 480); }
     virtual void onDraw(SkCanvas* canvas) {
         SkPaint paint;
+        sk_tool_utils::set_portable_typeface(&paint);
 
         paint.setStyle(SkPaint::kFill_Style);
         canvas->drawText("Normal Fill Text", 16, 0, 50, paint);
@@ -100,11 +102,11 @@ public:
     GradTextGM () {}
 
 protected:
-    virtual SkString onShortName() {
+    SkString onShortName() override {
         return SkString("gradtext");
     }
 
-    virtual SkISize onISize() { return SkISize::Make(500, 480); }
+    SkISize onISize() override { return SkISize::Make(500, 480); }
 
     static void draw_text(SkCanvas* canvas, const SkPaint& paint) {
         const char* text = "When in the course of human events";
@@ -125,8 +127,9 @@ protected:
         draw_text(canvas, p);
     }
 
-    virtual void onDraw(SkCanvas* canvas) {
+    void onDraw(SkCanvas* canvas) override {
         SkPaint paint;
+        sk_tool_utils::set_portable_typeface(&paint);
         paint.setTextSize(SkIntToScalar(26));
 
         const SkISize& size = this->getISize();

@@ -5,6 +5,8 @@
  * found in the LICENSE file.
  */
 
+#include "SkTypes.h"
+
 // This tests a Gr class
 #if SK_SUPPORT_GPU
 
@@ -32,16 +34,16 @@ GrMemoryPool A::gBenchPool(10 * (1 << 10), 10 * (1 << 10));
  */
 class GrMemoryPoolBenchStack : public Benchmark {
 public:
-    virtual bool isSuitableFor(Backend backend) SK_OVERRIDE {
+    bool isSuitableFor(Backend backend) override {
         return backend == kNonRendering_Backend;
     }
 
 protected:
-    virtual const char* onGetName() {
+    const char* onGetName() override {
         return "grmemorypool_stack";
     }
 
-    virtual void onDraw(const int loops, SkCanvas*) {
+    void onDraw(const int loops, SkCanvas*) override {
         SkRandom r;
         enum {
             kMaxObjects = 4 * (1 << 10),
@@ -94,16 +96,16 @@ GrMemoryPool B::gBenchPool(10 * (1 << 10), 10 * (1 << 10));
  */
 class GrMemoryPoolBenchRandom : public Benchmark {
 public:
-    virtual bool isSuitableFor(Backend backend) SK_OVERRIDE {
+    bool isSuitableFor(Backend backend) override {
         return backend == kNonRendering_Backend;
     }
 
 protected:
-    virtual const char* onGetName() {
+    const char* onGetName() override {
         return "grmemorypool_random";
     }
 
-    virtual void onDraw(const int loops, SkCanvas*) {
+    void onDraw(const int loops, SkCanvas*) override {
         SkRandom r;
         enum {
             kMaxObjects = 4 * (1 << 10),
@@ -142,16 +144,16 @@ class GrMemoryPoolBenchQueue : public Benchmark {
         M = 4 * (1 << 10),
     };
 public:
-    virtual bool isSuitableFor(Backend backend) SK_OVERRIDE {
+    bool isSuitableFor(Backend backend) override {
         return backend == kNonRendering_Backend;
     }
 
 protected:
-    virtual const char* onGetName() {
+    const char* onGetName() override {
         return "grmemorypool_queue";
     }
 
-    virtual void onDraw(const int loops, SkCanvas*) {
+    void onDraw(const int loops, SkCanvas*) override {
         SkRandom r;
         C* objects[M];
         for (int i = 0; i < loops; i++) {

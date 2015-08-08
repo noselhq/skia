@@ -7,10 +7,12 @@
 
 #include "Test.h"
 
+#include "SkPictureRecorder.h"
 #include "SkRecord.h"
 #include "SkRecorder.h"
 #include "SkRecords.h"
 #include "SkShader.h"
+#include "SkSurface.h"
 
 #define COUNT(T) + 1
 static const int kRecordTypes = SK_RECORD_TYPES(COUNT);
@@ -66,4 +68,43 @@ DEF_TEST(Recorder_RefLeaking, r) {
         REPORTER_ASSERT(r, !paint.getShader()->unique());
     }
     REPORTER_ASSERT(r, paint.getShader()->unique());
+}
+
+DEF_TEST(Recorder_drawImage_takeReference, reporter) {
+
+    SkAutoTUnref<SkImage> image;
+    {
+        SkAutoTUnref<SkSurface> surface(SkSurface::NewRasterN32Premul(100, 100));
+        surface->getCanvas()->clear(SK_ColorGREEN);
+        image.reset(surface->newImageSnapshot());
+    }
+    {
+        SkRecord record;
+        SkRecorder recorder(&record, 100, 100);
+
+        // DrawImage is supposed to take a reference
+        recorder.drawImage(image.get(), 0, 0);
+        REPORTER_ASSERT(reporter, !image->unique());
+
+        Tally tally;
+        tally.apply(record);
+
+        REPORTER_ASSERT(reporter, 1 == tally.count<SkRecords::DrawImage>());
+    }
+    REPORTER_ASSERT(reporter, image->unique());
+
+    {
+        SkRecord record;
+        SkRecorder recorder(&record, 100, 100);
+
+        // DrawImageRect is supposed to take a reference
+        recorder.drawImageRect(image.get(), SkRect::MakeWH(100, 100), nullptr);
+        REPORTER_ASSERT(reporter, !image->unique());
+
+        Tally tally;
+        tally.apply(record);
+
+        REPORTER_ASSERT(reporter, 1 == tally.count<SkRecords::DrawImageRect>());
+    }
+    REPORTER_ASSERT(reporter, image->unique());
 }

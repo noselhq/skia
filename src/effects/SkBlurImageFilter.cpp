@@ -8,10 +8,10 @@
 #include "SkBitmap.h"
 #include "SkBlurImageFilter.h"
 #include "SkColorPriv.h"
+#include "SkGpuBlurUtils.h"
+#include "SkOpts.h"
 #include "SkReadBuffer.h"
 #include "SkWriteBuffer.h"
-#include "SkGpuBlurUtils.h"
-#include "SkBlurImage_opts.h"
 #if SK_SUPPORT_GPU
 #include "GrContext.h"
 #endif
@@ -23,14 +23,12 @@
 // raster paths.
 #define MAX_SIGMA SkIntToScalar(532)
 
-SkBlurImageFilter::SkBlurImageFilter(SkReadBuffer& buffer)
-  : INHERITED(1, buffer) {
-    fSigma.fWidth = buffer.readScalar();
-    fSigma.fHeight = buffer.readScalar();
-    buffer.validate(SkScalarIsFinite(fSigma.fWidth) &&
-                    SkScalarIsFinite(fSigma.fHeight) &&
-                    (fSigma.fWidth >= 0) &&
-                    (fSigma.fHeight >= 0));
+static SkVector mapSigma(const SkSize& localSigma, const SkMatrix& ctm) {
+    SkVector sigma = SkVector::Make(localSigma.width(), localSigma.height());
+    ctm.mapVectors(&sigma, 1);
+    sigma.fX = SkMinScalar(SkScalarAbs(sigma.fX), MAX_SIGMA);
+    sigma.fY = SkMinScalar(SkScalarAbs(sigma.fY), MAX_SIGMA);
+    return sigma;
 }
 
 SkBlurImageFilter::SkBlurImageFilter(SkScalar sigmaX,
@@ -38,90 +36,19 @@ SkBlurImageFilter::SkBlurImageFilter(SkScalar sigmaX,
                                      SkImageFilter* input,
                                      const CropRect* cropRect)
     : INHERITED(1, &input, cropRect), fSigma(SkSize::Make(sigmaX, sigmaY)) {
-    SkASSERT(sigmaX >= 0 && sigmaY >= 0);
+}
+
+SkFlattenable* SkBlurImageFilter::CreateProc(SkReadBuffer& buffer) {
+    SK_IMAGEFILTER_UNFLATTEN_COMMON(common, 1);
+    SkScalar sigmaX = buffer.readScalar();
+    SkScalar sigmaY = buffer.readScalar();
+    return Create(sigmaX, sigmaY, common.getInput(0), &common.cropRect());
 }
 
 void SkBlurImageFilter::flatten(SkWriteBuffer& buffer) const {
     this->INHERITED::flatten(buffer);
     buffer.writeScalar(fSigma.fWidth);
     buffer.writeScalar(fSigma.fHeight);
-}
-
-enum BlurDirection {
-    kX, kY
-};
-
-/**
- *
- * In order to make memory accesses cache-friendly, we reorder the passes to
- * use contiguous memory reads wherever possible.
- *
- * For example, the 6 passes of the X-and-Y blur case are rewritten as
- * follows. Instead of 3 passes in X and 3 passes in Y, we perform
- * 2 passes in X, 1 pass in X transposed to Y on write, 2 passes in X,
- * then 1 pass in X transposed to Y on write.
- *
- * +----+       +----+       +----+        +---+       +---+       +---+        +----+
- * + AB + ----> | AB | ----> | AB | -----> | A | ----> | A | ----> | A | -----> | AB |
- * +----+ blurX +----+ blurX +----+ blurXY | B | blurX | B | blurX | B | blurXY +----+
- *                                         +---+       +---+       +---+
- *
- * In this way, two of the y-blurs become x-blurs applied to transposed
- * images, and all memory reads are contiguous.
- */
-
-template<BlurDirection srcDirection, BlurDirection dstDirection>
-static void boxBlur(const SkPMColor* src, int srcStride, SkPMColor* dst, int kernelSize,
-                    int leftOffset, int rightOffset, int width, int height)
-{
-    int rightBorder = SkMin32(rightOffset + 1, width);
-    int srcStrideX = srcDirection == kX ? 1 : srcStride;
-    int dstStrideX = dstDirection == kX ? 1 : height;
-    int srcStrideY = srcDirection == kX ? srcStride : 1;
-    int dstStrideY = dstDirection == kX ? width : 1;
-    uint32_t scale = (1 << 24) / kernelSize;
-    uint32_t half = 1 << 23;
-    for (int y = 0; y < height; ++y) {
-        int sumA = 0, sumR = 0, sumG = 0, sumB = 0;
-        const SkPMColor* p = src;
-        for (int i = 0; i < rightBorder; ++i) {
-            sumA += SkGetPackedA32(*p);
-            sumR += SkGetPackedR32(*p);
-            sumG += SkGetPackedG32(*p);
-            sumB += SkGetPackedB32(*p);
-            p += srcStrideX;
-        }
-
-        const SkPMColor* sptr = src;
-        SkColor* dptr = dst;
-        for (int x = 0; x < width; ++x) {
-            *dptr = SkPackARGB32((sumA * scale + half) >> 24,
-                                 (sumR * scale + half) >> 24,
-                                 (sumG * scale + half) >> 24,
-                                 (sumB * scale + half) >> 24);
-            if (x >= leftOffset) {
-                SkColor l = *(sptr - leftOffset * srcStrideX);
-                sumA -= SkGetPackedA32(l);
-                sumR -= SkGetPackedR32(l);
-                sumG -= SkGetPackedG32(l);
-                sumB -= SkGetPackedB32(l);
-            }
-            if (x + rightOffset + 1 < width) {
-                SkColor r = *(sptr + (rightOffset + 1) * srcStrideX);
-                sumA += SkGetPackedA32(r);
-                sumR += SkGetPackedR32(r);
-                sumG += SkGetPackedG32(r);
-                sumB += SkGetPackedB32(r);
-            }
-            sptr += srcStrideX;
-            if (srcDirection == kY) {
-                SK_PREFETCH(sptr + (rightOffset + 1) * srcStrideX);
-            }
-            dptr += dstStrideX;
-        }
-        src += srcStrideY;
-        dst += dstStrideY;
-    }
 }
 
 static void getBox3Params(SkScalar s, int *kernelSize, int* kernelSize3, int *lowOffset,
@@ -145,7 +72,8 @@ bool SkBlurImageFilter::onFilterImage(Proxy* proxy,
                                       SkBitmap* dst, SkIPoint* offset) const {
     SkBitmap src = source;
     SkIPoint srcOffset = SkIPoint::Make(0, 0);
-    if (getInput(0) && !getInput(0)->filterImage(proxy, source, ctx, &src, &srcOffset)) {
+    if (this->getInput(0) &&
+        !this->getInput(0)->filterImage(proxy, source, ctx, &src, &srcOffset)) {
         return false;
     }
 
@@ -163,15 +91,12 @@ bool SkBlurImageFilter::onFilterImage(Proxy* proxy,
         return false;
     }
 
-    if (!dst->allocPixels(src.info().makeWH(srcBounds.width(), srcBounds.height()))) {
+    if (!dst->tryAllocPixels(src.info().makeWH(srcBounds.width(), srcBounds.height()))) {
         return false;
     }
     dst->getBounds(&dstBounds);
 
-    SkVector sigma = SkVector::Make(fSigma.width(), fSigma.height());
-    ctx.ctm().mapVectors(&sigma, 1);
-    sigma.fX = SkMinScalar(sigma.fX, MAX_SIGMA);
-    sigma.fY = SkMinScalar(sigma.fY, MAX_SIGMA);
+    SkVector sigma = mapSigma(fSigma, ctx.ctm());
 
     int kernelSizeX, kernelSizeX3, lowOffsetX, highOffsetX;
     int kernelSizeY, kernelSizeY3, lowOffsetY, highOffsetY;
@@ -190,7 +115,7 @@ bool SkBlurImageFilter::onFilterImage(Proxy* proxy,
     }
 
     SkBitmap temp;
-    if (!temp.allocPixels(dst->info())) {
+    if (!temp.tryAllocPixels(dst->info())) {
         return false;
     }
 
@@ -202,37 +127,48 @@ bool SkBlurImageFilter::onFilterImage(Proxy* proxy,
     SkPMColor* d = dst->getAddr32(0, 0);
     int w = dstBounds.width(), h = dstBounds.height();
     int sw = src.rowBytesAsPixels();
-    SkBoxBlurProc boxBlurX, boxBlurY, boxBlurXY, boxBlurYX;
-    if (!SkBoxBlurGetPlatformProcs(&boxBlurX, &boxBlurY, &boxBlurXY, &boxBlurYX)) {
-        boxBlurX = boxBlur<kX, kX>;
-        boxBlurY = boxBlur<kY, kY>;
-        boxBlurXY = boxBlur<kX, kY>;
-        boxBlurYX = boxBlur<kY, kX>;
-    }
 
+    /**
+     *
+     * In order to make memory accesses cache-friendly, we reorder the passes to
+     * use contiguous memory reads wherever possible.
+     *
+     * For example, the 6 passes of the X-and-Y blur case are rewritten as
+     * follows. Instead of 3 passes in X and 3 passes in Y, we perform
+     * 2 passes in X, 1 pass in X transposed to Y on write, 2 passes in X,
+     * then 1 pass in X transposed to Y on write.
+     *
+     * +----+       +----+       +----+        +---+       +---+       +---+        +----+
+     * + AB + ----> | AB | ----> | AB | -----> | A | ----> | A | ----> | A | -----> | AB |
+     * +----+ blurX +----+ blurX +----+ blurXY | B | blurX | B | blurX | B | blurXY +----+
+     *                                         +---+       +---+       +---+
+     *
+     * In this way, two of the y-blurs become x-blurs applied to transposed
+     * images, and all memory reads are contiguous.
+     */
     if (kernelSizeX > 0 && kernelSizeY > 0) {
-        boxBlurX(s,  sw, t, kernelSizeX,  lowOffsetX,  highOffsetX, w, h);
-        boxBlurX(t,  w,  d, kernelSizeX,  highOffsetX, lowOffsetX,  w, h);
-        boxBlurXY(d, w,  t, kernelSizeX3, highOffsetX, highOffsetX, w, h);
-        boxBlurX(t,  h,  d, kernelSizeY,  lowOffsetY,  highOffsetY, h, w);
-        boxBlurX(d,  h,  t, kernelSizeY,  highOffsetY, lowOffsetY,  h, w);
-        boxBlurXY(t, h,  d, kernelSizeY3, highOffsetY, highOffsetY, h, w);
+        SkOpts::box_blur_xx(s, sw,  t, kernelSizeX,  lowOffsetX,  highOffsetX, w, h);
+        SkOpts::box_blur_xx(t,  w,  d, kernelSizeX,  highOffsetX, lowOffsetX,  w, h);
+        SkOpts::box_blur_xy(d,  w,  t, kernelSizeX3, highOffsetX, highOffsetX, w, h);
+        SkOpts::box_blur_xx(t,  h,  d, kernelSizeY,  lowOffsetY,  highOffsetY, h, w);
+        SkOpts::box_blur_xx(d,  h,  t, kernelSizeY,  highOffsetY, lowOffsetY,  h, w);
+        SkOpts::box_blur_xy(t,  h,  d, kernelSizeY3, highOffsetY, highOffsetY, h, w);
     } else if (kernelSizeX > 0) {
-        boxBlurX(s,  sw, d, kernelSizeX,  lowOffsetX,  highOffsetX, w, h);
-        boxBlurX(d,  w,  t, kernelSizeX,  highOffsetX, lowOffsetX,  w, h);
-        boxBlurX(t,  w,  d, kernelSizeX3, highOffsetX, highOffsetX, w, h);
+        SkOpts::box_blur_xx(s, sw,  d, kernelSizeX,  lowOffsetX,  highOffsetX, w, h);
+        SkOpts::box_blur_xx(d,  w,  t, kernelSizeX,  highOffsetX, lowOffsetX,  w, h);
+        SkOpts::box_blur_xx(t,  w,  d, kernelSizeX3, highOffsetX, highOffsetX, w, h);
     } else if (kernelSizeY > 0) {
-        boxBlurYX(s, sw, d, kernelSizeY,  lowOffsetY,  highOffsetY, h, w);
-        boxBlurX(d,  h,  t, kernelSizeY,  highOffsetY, lowOffsetY,  h, w);
-        boxBlurXY(t, h,  d, kernelSizeY3, highOffsetY, highOffsetY, h, w);
+        SkOpts::box_blur_yx(s, sw,  d, kernelSizeY,  lowOffsetY,  highOffsetY, h, w);
+        SkOpts::box_blur_xx(d,  h,  t, kernelSizeY,  highOffsetY, lowOffsetY,  h, w);
+        SkOpts::box_blur_xy(t,  h,  d, kernelSizeY3, highOffsetY, highOffsetY, h, w);
     }
     return true;
 }
 
 
 void SkBlurImageFilter::computeFastBounds(const SkRect& src, SkRect* dst) const {
-    if (getInput(0)) {
-        getInput(0)->computeFastBounds(src, dst);
+    if (this->getInput(0)) {
+        this->getInput(0)->computeFastBounds(src, dst);
     } else {
         *dst = src;
     }
@@ -244,13 +180,12 @@ void SkBlurImageFilter::computeFastBounds(const SkRect& src, SkRect* dst) const 
 bool SkBlurImageFilter::onFilterBounds(const SkIRect& src, const SkMatrix& ctm,
                                        SkIRect* dst) const {
     SkIRect bounds = src;
-    if (getInput(0) && !getInput(0)->filterBounds(src, ctm, &bounds)) {
-        return false;
-    }
-    SkVector sigma = SkVector::Make(fSigma.width(), fSigma.height());
-    ctm.mapVectors(&sigma, 1);
+    SkVector sigma = mapSigma(fSigma, ctm);
     bounds.outset(SkScalarCeilToInt(SkScalarMul(sigma.x(), SkIntToScalar(3))),
                   SkScalarCeilToInt(SkScalarMul(sigma.y(), SkIntToScalar(3))));
+    if (this->getInput(0) && !this->getInput(0)->filterBounds(bounds, ctm, &bounds)) {
+        return false;
+    }
     *dst = bounds;
     return true;
 }
@@ -260,7 +195,8 @@ bool SkBlurImageFilter::filterImageGPU(Proxy* proxy, const SkBitmap& src, const 
 #if SK_SUPPORT_GPU
     SkBitmap input = src;
     SkIPoint srcOffset = SkIPoint::Make(0, 0);
-    if (getInput(0) && !getInput(0)->getInputResultGPU(proxy, src, ctx, &input, &srcOffset)) {
+    if (this->getInput(0) &&
+        !this->getInput(0)->getInputResultGPU(proxy, src, ctx, &input, &srcOffset)) {
         return false;
     }
     SkIRect rect;
@@ -268,10 +204,7 @@ bool SkBlurImageFilter::filterImageGPU(Proxy* proxy, const SkBitmap& src, const 
         return false;
     }
     GrTexture* source = input.getTexture();
-    SkVector sigma = SkVector::Make(fSigma.width(), fSigma.height());
-    ctx.ctm().mapVectors(&sigma, 1);
-    sigma.fX = SkMinScalar(sigma.fX, MAX_SIGMA);
-    sigma.fY = SkMinScalar(sigma.fY, MAX_SIGMA);
+    SkVector sigma = mapSigma(fSigma, ctx.ctm());
     offset->fX = rect.fLeft;
     offset->fY = rect.fTop;
     rect.offset(-srcOffset);
@@ -282,6 +215,9 @@ bool SkBlurImageFilter::filterImageGPU(Proxy* proxy, const SkBitmap& src, const 
                                                              true,
                                                              sigma.x(),
                                                              sigma.y()));
+    if (!tex) {
+        return false;
+    }
     WrapTexture(tex, rect.width(), rect.height(), result);
     return true;
 #else
@@ -289,3 +225,16 @@ bool SkBlurImageFilter::filterImageGPU(Proxy* proxy, const SkBitmap& src, const 
     return false;
 #endif
 }
+
+#ifndef SK_IGNORE_TO_STRING
+void SkBlurImageFilter::toString(SkString* str) const {
+    str->appendf("SkBlurImageFilter: (");
+    str->appendf("sigma: (%f, %f) input (", fSigma.fWidth, fSigma.fHeight);
+
+    if (this->getInput(0)) {
+        this->getInput(0)->toString(str);
+    }
+
+    str->append("))");
+}
+#endif

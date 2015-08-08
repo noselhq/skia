@@ -40,7 +40,6 @@ const GrGLInterface* GrGLInterfaceRemoveNVPR(const GrGLInterface* interface) {
 
     newInterface->fExtensions.remove("GL_NV_path_rendering");
     newInterface->fFunctions.fPathCommands = NULL;
-    newInterface->fFunctions.fPathCoords = NULL;
     newInterface->fFunctions.fPathParameteri = NULL;
     newInterface->fFunctions.fPathParameterf = NULL;
     newInterface->fFunctions.fGenPaths = NULL;
@@ -51,12 +50,16 @@ const GrGLInterface* GrGLInterfaceRemoveNVPR(const GrGLInterface* interface) {
     newInterface->fFunctions.fStencilStrokePath = NULL;
     newInterface->fFunctions.fStencilFillPathInstanced = NULL;
     newInterface->fFunctions.fStencilStrokePathInstanced = NULL;
-    newInterface->fFunctions.fPathTexGen = NULL;
     newInterface->fFunctions.fCoverFillPath = NULL;
     newInterface->fFunctions.fCoverStrokePath = NULL;
     newInterface->fFunctions.fCoverFillPathInstanced = NULL;
     newInterface->fFunctions.fCoverStrokePathInstanced = NULL;
+    newInterface->fFunctions.fStencilThenCoverFillPath = NULL;
+    newInterface->fFunctions.fStencilThenCoverStrokePath = NULL;
+    newInterface->fFunctions.fStencilThenCoverFillPathInstanced = NULL;
+    newInterface->fFunctions.fStencilThenCoverStrokePathInstanced = NULL;
     newInterface->fFunctions.fProgramPathFragmentInputGen = NULL;
+    newInterface->fFunctions.fBindFragmentInputLocation = NULL;
     return newInterface;
 }
 
@@ -70,7 +73,7 @@ GrGLInterface::GrGLInterface() {
 }
 
 GrGLInterface* GrGLInterface::NewClone(const GrGLInterface* interface) {
-    SkASSERT(NULL != interface);
+    SkASSERT(interface);
 
     GrGLInterface* clone = SkNEW(GrGLInterface);
     clone->fStandard = interface->fStandard;
@@ -109,8 +112,9 @@ bool GrGLInterface::validate() const {
         NULL == fFunctions.fBindAttribLocation ||
         NULL == fFunctions.fBindBuffer ||
         NULL == fFunctions.fBindTexture ||
+        NULL == fFunctions.fBlendColor ||      // -> GL >= 1.4 or extension, ES >= 2.0
+        NULL == fFunctions.fBlendEquation ||   // -> GL >= 1.4 or extension, ES >= 2.0
         NULL == fFunctions.fBlendFunc ||
-        NULL == fFunctions.fBlendColor ||      // -> GL >= 1.4, ES >= 2.0 or extension
         NULL == fFunctions.fBufferData ||
         NULL == fFunctions.fBufferSubData ||
         NULL == fFunctions.fClear ||
@@ -146,6 +150,9 @@ bool GrGLInterface::validate() const {
         NULL == fFunctions.fGetShaderiv ||
         NULL == fFunctions.fGetString ||
         NULL == fFunctions.fGetUniformLocation ||
+#if 0 //  Not included in Chrome yet
+        NULL == fFunctions.fIsTexture ||
+#endif
         NULL == fFunctions.fLinkProgram ||
         NULL == fFunctions.fLineWidth ||
         NULL == fFunctions.fPixelStorei ||
@@ -179,6 +186,9 @@ bool GrGLInterface::validate() const {
         NULL == fFunctions.fUniformMatrix3fv ||
         NULL == fFunctions.fUniformMatrix4fv ||
         NULL == fFunctions.fUseProgram ||
+        NULL == fFunctions.fVertexAttrib1f ||
+        NULL == fFunctions.fVertexAttrib2fv ||
+        NULL == fFunctions.fVertexAttrib3fv ||
         NULL == fFunctions.fVertexAttrib4fv ||
         NULL == fFunctions.fVertexAttribPointer ||
         NULL == fFunctions.fViewport ||
@@ -298,6 +308,28 @@ bool GrGLInterface::validate() const {
         }
     }
 
+    // glTextureBarrier is part of desktop 4.5. There are also ARB and NV extensions.
+    if (kGL_GrGLStandard == fStandard) {
+        if (glVer >= GR_GL_VER(4,5) ||
+            fExtensions.has("GL_ARB_texture_barrier") ||
+            fExtensions.has("GL_NV_texture_barrier")) {
+            if (NULL == fFunctions.fTextureBarrier) {
+                RETURN_FALSE_INTERFACE
+            }
+        }
+    } else if (fExtensions.has("GL_NV_texture_barrier")) {
+        if (NULL == fFunctions.fTextureBarrier) {
+            RETURN_FALSE_INTERFACE
+        }
+    }
+
+    if (fExtensions.has("GL_KHR_blend_equation_advanced") ||
+        fExtensions.has("GL_NV_blend_equation_advanced")) {
+        if (NULL == fFunctions.fBlendBarrier) {
+            RETURN_FALSE_INTERFACE
+        }
+    }
+
     if (fExtensions.has("GL_EXT_discard_framebuffer")) {
 // FIXME: Remove this once Chromium is updated to provide this function
 #if 0
@@ -358,12 +390,21 @@ bool GrGLInterface::validate() const {
     }
 
     // Dual source blending
-    if (kGL_GrGLStandard == fStandard &&
-        (glVer >= GR_GL_VER(3,3) || fExtensions.has("GL_ARB_blend_func_extended"))) {
-        if (NULL == fFunctions.fBindFragDataLocationIndexed) {
-            RETURN_FALSE_INTERFACE
+    if (kGL_GrGLStandard == fStandard) {
+        if (glVer >= GR_GL_VER(3,3) || fExtensions.has("GL_ARB_blend_func_extended")) {
+            if (NULL == fFunctions.fBindFragDataLocationIndexed) {
+                RETURN_FALSE_INTERFACE
+            }
+        }
+    } else {
+        if (glVer >= GR_GL_VER(3,0) && fExtensions.has("GL_EXT_blend_func_extended")) {
+            if (NULL == fFunctions.fBindFragDataLocation ||
+                NULL == fFunctions.fBindFragDataLocationIndexed) {
+                RETURN_FALSE_INTERFACE
+            }
         }
     }
+
 
     // glGetStringi was added in version 3.0 of both desktop and ES.
     if (glVer >= GR_GL_VER(3, 0)) {
@@ -435,14 +476,6 @@ bool GrGLInterface::validate() const {
         }
     }
 
-    if ((kGL_GrGLStandard == fStandard && fExtensions.has("GL_EXT_direct_state_access")) ||
-        (kGLES_GrGLStandard == fStandard && fExtensions.has("GL_NV_path_rendering"))) {
-        if (NULL == fFunctions.fMatrixLoadf ||
-            NULL == fFunctions.fMatrixLoadIdentity) {
-            RETURN_FALSE_INTERFACE
-        }
-    }
-
     if ((kGL_GrGLStandard == fStandard &&
          (glVer >= GR_GL_VER(4,3) || fExtensions.has("GL_ARB_program_interface_query"))) ||
         (kGLES_GrGLStandard == fStandard && glVer >= GR_GL_VER(3,1))) {
@@ -451,9 +484,19 @@ bool GrGLInterface::validate() const {
         }
     }
 
-    if (fExtensions.has("GL_NV_path_rendering")) {
-        if (NULL == fFunctions.fPathCommands ||
-            NULL == fFunctions.fPathCoords ||
+    if (kGLES_GrGLStandard == fStandard || glVer >= GR_GL_VER(4,1) ||
+        fExtensions.has("GL_ARB_ES2_compatibility")) {
+#if 0 // Enable this once Chrome gives us the function ptr
+        if (NULL == fFunctions.fGetShaderPrecisionFormat) {
+            RETURN_FALSE_INTERFACE
+        }
+#endif
+    }
+
+    if (fExtensions.has("GL_NV_path_rendering") || fExtensions.has("GL_CHROMIUM_path_rendering")) {
+        if (NULL == fFunctions.fMatrixLoadf ||
+            NULL == fFunctions.fMatrixLoadIdentity ||
+            NULL == fFunctions.fPathCommands ||
             NULL == fFunctions.fPathParameteri ||
             NULL == fFunctions.fPathParameterf ||
             NULL == fFunctions.fGenPaths ||
@@ -467,13 +510,206 @@ bool GrGLInterface::validate() const {
             NULL == fFunctions.fCoverFillPath ||
             NULL == fFunctions.fCoverStrokePath ||
             NULL == fFunctions.fCoverFillPathInstanced ||
-            NULL == fFunctions.fCoverStrokePathInstanced) {
+            NULL == fFunctions.fCoverStrokePathInstanced
+#if 0
+            // List of functions that Skia uses, but which have been added since the initial release
+            // of NV_path_rendering driver. We do not want to fail interface validation due to
+            // missing features, we will just not use the extension.
+            // Update this list -> update GrGLCaps::hasPathRenderingSupport too.
+            || NULL == fFunctions.fStencilThenCoverFillPath ||
+            NULL == fFunctions.fStencilThenCoverStrokePath ||
+            NULL == fFunctions.fStencilThenCoverFillPathInstanced ||
+            NULL == fFunctions.fStencilThenCoverStrokePathInstanced ||
+            NULL == fFunctions.fProgramPathFragmentInputGen
+#endif
+            ) {
             RETURN_FALSE_INTERFACE
         }
-        // Currently ProgramPathFragmentInputGen is not used on
-        // OpenGL, rather PathTexGen is.
-        if ((kGL_GrGLStandard == fStandard && NULL == fFunctions.fPathTexGen) ||
-            (kGLES_GrGLStandard == fStandard && NULL == fFunctions.fProgramPathFragmentInputGen)) {
+        if (fExtensions.has("GL_CHROMIUM_path_rendering")) {
+            if (NULL == fFunctions.fBindFragmentInputLocation) {
+                RETURN_FALSE_INTERFACE
+            }
+        }
+    }
+
+    if (fExtensions.has("GL_EXT_raster_multisample")) {
+        if (NULL == fFunctions.fRasterSamples) {
+            RETURN_FALSE_INTERFACE
+        }
+    }
+
+    if (fExtensions.has("GL_NV_framebuffer_mixed_samples")) {
+        if (NULL == fFunctions.fCoverageModulation) {
+            RETURN_FALSE_INTERFACE
+        }
+    }
+
+    if ((kGL_GrGLStandard == fStandard && glVer >= GR_GL_VER(3,1)) ||
+        (kGLES_GrGLStandard == fStandard && glVer >= GR_GL_VER(3,0)) ||
+        fExtensions.has("GL_ARB_draw_instanced") ||
+        fExtensions.has("GL_EXT_draw_instanced")) {
+        if (NULL == fFunctions.fDrawArraysInstanced ||
+            NULL == fFunctions.fDrawElementsInstanced) {
+            RETURN_FALSE_INTERFACE
+        }
+    }
+
+    if ((kGL_GrGLStandard == fStandard && glVer >= GR_GL_VER(3,2)) ||
+        (kGLES_GrGLStandard == fStandard && glVer >= GR_GL_VER(3,0)) ||
+        fExtensions.has("GL_ARB_instanced_arrays") ||
+        fExtensions.has("GL_EXT_instanced_arrays")) {
+        if (NULL == fFunctions.fVertexAttribDivisor) {
+            RETURN_FALSE_INTERFACE
+        }
+    }
+
+    if (fExtensions.has("GL_NV_bindless_texture")) {
+        if (NULL == fFunctions.fGetTextureHandle ||
+            NULL == fFunctions.fGetTextureSamplerHandle ||
+            NULL == fFunctions.fMakeTextureHandleResident ||
+            NULL == fFunctions.fMakeTextureHandleNonResident ||
+            NULL == fFunctions.fGetImageHandle ||
+            NULL == fFunctions.fMakeImageHandleResident ||
+            NULL == fFunctions.fMakeImageHandleNonResident ||
+            NULL == fFunctions.fIsTextureHandleResident ||
+            NULL == fFunctions.fIsImageHandleResident ||
+            NULL == fFunctions.fUniformHandleui64 ||
+            NULL == fFunctions.fUniformHandleui64v ||
+            NULL == fFunctions.fProgramUniformHandleui64 ||
+            NULL == fFunctions.fProgramUniformHandleui64v) {
+            RETURN_FALSE_INTERFACE
+        }
+    }
+
+    if (kGL_GrGLStandard == fStandard && fExtensions.has("GL_EXT_direct_state_access")) {
+        if (NULL == fFunctions.fTextureParameteri ||
+            NULL == fFunctions.fTextureParameteriv ||
+            NULL == fFunctions.fTextureParameterf ||
+            NULL == fFunctions.fTextureParameterfv ||
+            NULL == fFunctions.fTextureImage1D ||
+            NULL == fFunctions.fTextureImage2D ||
+            NULL == fFunctions.fTextureSubImage1D ||
+            NULL == fFunctions.fTextureSubImage2D ||
+            NULL == fFunctions.fCopyTextureImage1D ||
+            NULL == fFunctions.fCopyTextureImage2D ||
+            NULL == fFunctions.fCopyTextureSubImage1D ||
+            NULL == fFunctions.fCopyTextureSubImage2D ||
+            NULL == fFunctions.fGetTextureImage ||
+            NULL == fFunctions.fGetTextureParameterfv ||
+            NULL == fFunctions.fGetTextureParameteriv ||
+            NULL == fFunctions.fGetTextureLevelParameterfv ||
+            NULL == fFunctions.fGetTextureLevelParameteriv) {
+            RETURN_FALSE_INTERFACE
+        }
+        if (glVer >= GR_GL_VER(1,2)) {
+            if (NULL == fFunctions.fTextureImage3D ||
+                NULL == fFunctions.fTextureSubImage3D ||
+                NULL == fFunctions.fCopyTextureSubImage3D ||
+                NULL == fFunctions.fCompressedTextureImage3D ||
+                NULL == fFunctions.fCompressedTextureImage2D ||
+                NULL == fFunctions.fCompressedTextureImage1D ||
+                NULL == fFunctions.fCompressedTextureSubImage3D ||
+                NULL == fFunctions.fCompressedTextureSubImage2D ||
+                NULL == fFunctions.fCompressedTextureSubImage1D ||
+                NULL == fFunctions.fGetCompressedTextureImage) {
+                RETURN_FALSE_INTERFACE
+            }
+        }
+        if (glVer >= GR_GL_VER(1,5)) {
+            if (NULL == fFunctions.fNamedBufferData ||
+                NULL == fFunctions.fNamedBufferSubData ||
+                NULL == fFunctions.fMapNamedBuffer ||
+                NULL == fFunctions.fUnmapNamedBuffer ||
+                NULL == fFunctions.fGetNamedBufferParameteriv ||
+                NULL == fFunctions.fGetNamedBufferPointerv ||
+                NULL == fFunctions.fGetNamedBufferSubData) {
+                RETURN_FALSE_INTERFACE
+            }
+        }
+        if (glVer >= GR_GL_VER(2,0)) {
+            if (NULL == fFunctions.fProgramUniform1f ||
+                NULL == fFunctions.fProgramUniform2f ||
+                NULL == fFunctions.fProgramUniform3f ||
+                NULL == fFunctions.fProgramUniform4f ||
+                NULL == fFunctions.fProgramUniform1i ||
+                NULL == fFunctions.fProgramUniform2i ||
+                NULL == fFunctions.fProgramUniform3i ||
+                NULL == fFunctions.fProgramUniform4i ||
+                NULL == fFunctions.fProgramUniform1fv ||
+                NULL == fFunctions.fProgramUniform2fv ||
+                NULL == fFunctions.fProgramUniform3fv ||
+                NULL == fFunctions.fProgramUniform4fv ||
+                NULL == fFunctions.fProgramUniform1iv ||
+                NULL == fFunctions.fProgramUniform2iv ||
+                NULL == fFunctions.fProgramUniform3iv ||
+                NULL == fFunctions.fProgramUniform4iv ||
+                NULL == fFunctions.fProgramUniformMatrix2fv ||
+                NULL == fFunctions.fProgramUniformMatrix3fv ||
+                NULL == fFunctions.fProgramUniformMatrix4fv) {
+                RETURN_FALSE_INTERFACE
+            }
+        }
+        if (glVer >= GR_GL_VER(2,1)) {
+            if (NULL == fFunctions.fProgramUniformMatrix2x3fv ||
+                NULL == fFunctions.fProgramUniformMatrix3x2fv ||
+                NULL == fFunctions.fProgramUniformMatrix2x4fv ||
+                NULL == fFunctions.fProgramUniformMatrix4x2fv ||
+                NULL == fFunctions.fProgramUniformMatrix3x4fv ||
+                NULL == fFunctions.fProgramUniformMatrix4x3fv) {
+                RETURN_FALSE_INTERFACE
+            }
+        }
+        if (glVer >= GR_GL_VER(3,0)) {
+            if (NULL == fFunctions.fNamedRenderbufferStorage ||
+                NULL == fFunctions.fGetNamedRenderbufferParameteriv ||
+                NULL == fFunctions.fNamedRenderbufferStorageMultisample ||
+                NULL == fFunctions.fCheckNamedFramebufferStatus ||
+                NULL == fFunctions.fNamedFramebufferTexture1D ||
+                NULL == fFunctions.fNamedFramebufferTexture2D ||
+                NULL == fFunctions.fNamedFramebufferTexture3D ||
+                NULL == fFunctions.fNamedFramebufferRenderbuffer ||
+                NULL == fFunctions.fGetNamedFramebufferAttachmentParameteriv ||
+                NULL == fFunctions.fGenerateTextureMipmap ||
+                NULL == fFunctions.fFramebufferDrawBuffer ||
+                NULL == fFunctions.fFramebufferDrawBuffers ||
+                NULL == fFunctions.fFramebufferReadBuffer ||
+                NULL == fFunctions.fGetFramebufferParameteriv ||
+                NULL == fFunctions.fNamedCopyBufferSubData ||
+                NULL == fFunctions.fVertexArrayVertexOffset ||
+                NULL == fFunctions.fVertexArrayColorOffset ||
+                NULL == fFunctions.fVertexArrayEdgeFlagOffset ||
+                NULL == fFunctions.fVertexArrayIndexOffset ||
+                NULL == fFunctions.fVertexArrayNormalOffset ||
+                NULL == fFunctions.fVertexArrayTexCoordOffset ||
+                NULL == fFunctions.fVertexArrayMultiTexCoordOffset ||
+                NULL == fFunctions.fVertexArrayFogCoordOffset ||
+                NULL == fFunctions.fVertexArraySecondaryColorOffset ||
+                NULL == fFunctions.fVertexArrayVertexAttribOffset ||
+                NULL == fFunctions.fVertexArrayVertexAttribIOffset ||
+                NULL == fFunctions.fEnableVertexArray ||
+                NULL == fFunctions.fDisableVertexArray ||
+                NULL == fFunctions.fEnableVertexArrayAttrib ||
+                NULL == fFunctions.fDisableVertexArrayAttrib ||
+                NULL == fFunctions.fGetVertexArrayIntegerv ||
+                NULL == fFunctions.fGetVertexArrayPointerv ||
+                NULL == fFunctions.fGetVertexArrayIntegeri_v ||
+                NULL == fFunctions.fGetVertexArrayPointeri_v ||
+                NULL == fFunctions.fMapNamedBufferRange ||
+                NULL == fFunctions.fFlushMappedNamedBufferRange) {
+                RETURN_FALSE_INTERFACE
+            }
+        }
+    }
+
+    if ((kGL_GrGLStandard == fStandard && glVer >= GR_GL_VER(4,3)) ||
+        fExtensions.has("GL_KHR_debug")) {
+        if (NULL == fFunctions.fDebugMessageControl ||
+            NULL == fFunctions.fDebugMessageInsert ||
+            NULL == fFunctions.fDebugMessageCallback ||
+            NULL == fFunctions.fGetDebugMessageLog ||
+            NULL == fFunctions.fPushDebugGroup ||
+            NULL == fFunctions.fPopDebugGroup ||
+            NULL == fFunctions.fObjectLabel) {
             RETURN_FALSE_INTERFACE
         }
     }

@@ -23,18 +23,37 @@ SkPathRef::Editor::Editor(SkAutoTUnref<SkPathRef>* pathRef,
         pathRef->reset(copy);
     }
     fPathRef = *pathRef;
+    fPathRef->callGenIDChangeListeners();
     fPathRef->fGenerationID = 0;
     SkDEBUGCODE(sk_atomic_inc(&fPathRef->fEditorsAttached);)
 }
 
 //////////////////////////////////////////////////////////////////////////////
 
-SkPathRef* SkPathRef::CreateEmptyImpl() {
-    return SkNEW(SkPathRef);
+SkPathRef::~SkPathRef() {
+    this->callGenIDChangeListeners();
+    SkDEBUGCODE(this->validate();)
+    sk_free(fPoints);
+
+    SkDEBUGCODE(fPoints = NULL;)
+    SkDEBUGCODE(fVerbs = NULL;)
+    SkDEBUGCODE(fVerbCnt = 0x9999999;)
+    SkDEBUGCODE(fPointCnt = 0xAAAAAAA;)
+    SkDEBUGCODE(fPointCnt = 0xBBBBBBB;)
+    SkDEBUGCODE(fGenerationID = 0xEEEEEEEE;)
+    SkDEBUGCODE(fEditorsAttached = 0x7777777;)
 }
 
+// As a template argument, this must have external linkage.
+SkPathRef* sk_create_empty_pathref() {
+    SkPathRef* empty = SkNEW(SkPathRef);
+    empty->computeBounds();   // Avoids races later to be the first to do this.
+    return empty;
+}
+
+SK_DECLARE_STATIC_LAZY_PTR(SkPathRef, empty, sk_create_empty_pathref);
+
 SkPathRef* SkPathRef::CreateEmpty() {
-    SK_DECLARE_STATIC_LAZY_PTR(SkPathRef, empty, CreateEmptyImpl);
     return SkRef(empty.get());
 }
 
@@ -83,13 +102,13 @@ void SkPathRef::CreateTransformedCopy(SkAutoTUnref<SkPathRef>* dst,
     if (canXformBounds) {
         (*dst)->fBoundsIsDirty = false;
         if (src.fIsFinite) {
-            matrix.mapRect((*dst)->fBounds.get(), src.fBounds);
-            if (!((*dst)->fIsFinite = (*dst)->fBounds->isFinite())) {
-                (*dst)->fBounds->setEmpty();
+            matrix.mapRect(&(*dst)->fBounds, src.fBounds);
+            if (!((*dst)->fIsFinite = (*dst)->fBounds.isFinite())) {
+                (*dst)->fBounds.setEmpty();
             }
         } else {
             (*dst)->fIsFinite = false;
-            (*dst)->fBounds->setEmpty();
+            (*dst)->fBounds.setEmpty();
         }
     } else {
         (*dst)->fBoundsIsDirty = true;
@@ -150,6 +169,7 @@ SkPathRef* SkPathRef::CreateFromBuffer(SkRBuffer* buffer) {
 void SkPathRef::Rewind(SkAutoTUnref<SkPathRef>* pathRef) {
     if ((*pathRef)->unique()) {
         SkDEBUGCODE((*pathRef)->validate();)
+        (*pathRef)->callGenIDChangeListeners();
         (*pathRef)->fBoundsIsDirty = true;  // this also invalidates fIsFinite
         (*pathRef)->fVerbCnt = 0;
         (*pathRef)->fPointCnt = 0;
@@ -189,12 +209,18 @@ bool SkPathRef::operator== (const SkPathRef& ref) const {
         SkASSERT(!genIDMatch);
         return false;
     }
+    if (0 == ref.fVerbCnt) {
+        SkASSERT(0 == ref.fPointCnt);
+        return true;
+    }
+    SkASSERT(this->verbsMemBegin() && ref.verbsMemBegin());
     if (0 != memcmp(this->verbsMemBegin(),
                     ref.verbsMemBegin(),
                     ref.fVerbCnt * sizeof(uint8_t))) {
         SkASSERT(!genIDMatch);
         return false;
     }
+    SkASSERT(this->points() && ref.points());
     if (0 != memcmp(this->points(),
                     ref.points(),
                     ref.fPointCnt * sizeof(SkPoint))) {
@@ -204,13 +230,6 @@ bool SkPathRef::operator== (const SkPathRef& ref) const {
     if (fConicWeights != ref.fConicWeights) {
         SkASSERT(!genIDMatch);
         return false;
-    }
-    // We've done the work to determine that these are equal. If either has a zero genID, copy
-    // the other's. If both are 0 then genID() will compute the next ID.
-    if (0 == fGenerationID) {
-        fGenerationID = ref.genID();
-    } else if (0 == ref.fGenerationID) {
-        ref.fGenerationID = this->genID();
     }
     return true;
 }
@@ -259,9 +278,6 @@ void SkPathRef::copy(const SkPathRef& ref,
     memcpy(this->verbsMemWritable(), ref.verbsMemBegin(), ref.fVerbCnt * sizeof(uint8_t));
     memcpy(this->fPoints, ref.fPoints, ref.fPointCnt * sizeof(SkPoint));
     fConicWeights = ref.fConicWeights;
-    // We could call genID() here to force a real ID (instead of 0). However, if we're making
-    // a copy then presumably we intend to make a modification immediately afterwards.
-    fGenerationID = ref.fGenerationID;
     fBoundsIsDirty = ref.fBoundsIsDirty;
     if (!fBoundsIsDirty) {
         fBounds = ref.fBounds;
@@ -343,7 +359,7 @@ SkPoint* SkPathRef::growForRepeatedVerb(int /*SkPath::Verb*/ verb,
     }
 
     if (SkPath::kConic_Verb == verb) {
-        SkASSERT(NULL != weights);
+        SkASSERT(weights);
         *weights = fConicWeights.append(numVbs);
     }
 
@@ -426,6 +442,24 @@ uint32_t SkPathRef::genID() const {
     return fGenerationID;
 }
 
+void SkPathRef::addGenIDChangeListener(GenIDChangeListener* listener) {
+    if (NULL == listener || this == empty.get()) {
+        SkDELETE(listener);
+        return;
+    }
+    *fGenIDChangeListeners.append() = listener;
+}
+
+// we need to be called *before* the genID gets changed or zerod
+void SkPathRef::callGenIDChangeListeners() {
+    for (int i = 0; i < fGenIDChangeListeners.count(); i++) {
+        fGenIDChangeListeners[i]->onChange();
+    }
+
+    // Listeners get at most one shot, so whether these triggered or not, blow them away.
+    fGenIDChangeListeners.deleteAll();
+}
+
 #ifdef SK_DEBUG
 void SkPathRef::validate() const {
     this->INHERITED::validate();
@@ -439,14 +473,27 @@ void SkPathRef::validate() const {
     SkASSERT(this->currSize() ==
                 fFreeSpace + sizeof(SkPoint) * fPointCnt + sizeof(uint8_t) * fVerbCnt);
 
-    if (!fBoundsIsDirty && !fBounds->isEmpty()) {
+    if (!fBoundsIsDirty && !fBounds.isEmpty()) {
         bool isFinite = true;
         for (int i = 0; i < fPointCnt; ++i) {
-            SkASSERT(!fPoints[i].isFinite() || (
-                     fBounds->fLeft - fPoints[i].fX   < SK_ScalarNearlyZero &&
-                     fPoints[i].fX - fBounds->fRight  < SK_ScalarNearlyZero &&
-                     fBounds->fTop  - fPoints[i].fY   < SK_ScalarNearlyZero &&
-                     fPoints[i].fY - fBounds->fBottom < SK_ScalarNearlyZero));
+#ifdef SK_DEBUG
+            if (fPoints[i].isFinite() &&
+                (fPoints[i].fX < fBounds.fLeft || fPoints[i].fX > fBounds.fRight ||
+                 fPoints[i].fY < fBounds.fTop || fPoints[i].fY > fBounds.fBottom)) {
+                SkDebugf("bounds: %f %f %f %f\n",
+                         fBounds.fLeft, fBounds.fTop, fBounds.fRight, fBounds.fBottom);
+                for (int j = 0; j < fPointCnt; ++j) {
+                    if (i == j) {
+                        SkDebugf("*");
+                    }
+                    SkDebugf("%f %f\n", fPoints[j].fX, fPoints[j].fY);
+                }
+            }
+#endif
+
+            SkASSERT(!fPoints[i].isFinite() ||
+		     (fPoints[i].fX >= fBounds.fLeft && fPoints[i].fX <= fBounds.fRight &&
+		      fPoints[i].fY >= fBounds.fTop && fPoints[i].fY <= fBounds.fBottom));
             if (!fPoints[i].isFinite()) {
                 isFinite = false;
             }

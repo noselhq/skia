@@ -14,12 +14,6 @@
 
 #include "SkString.h"
 
-#if defined(SK_BUILD_FOR_MAC) || defined(SK_BUILD_FOR_UNIX) || defined(SK_BUILD_FOR_ANDROID) || defined(SK_BUILD_FOR_IOS)
-    #include <dirent.h>
-#endif
-
-#include <stddef.h> // ptrdiff_t
-
 struct SkFILE;
 
 enum SkFILE_Flags {
@@ -109,21 +103,16 @@ public:
         */
         bool next(SkString* name, bool getDir = false);
 
+        static const size_t kStorageSize = 40;
     private:
-#ifdef SK_BUILD_FOR_WIN
-        HANDLE      fHandle;
-        uint16_t*   fPath16;
-#elif defined(SK_BUILD_FOR_MAC) || defined(SK_BUILD_FOR_UNIX) || defined(SK_BUILD_FOR_ANDROID) || defined(SK_BUILD_FOR_IOS)
-        DIR*        fDIR;
-        SkString    fPath, fSuffix;
-#endif
+        SkAlignedSStorage<kStorageSize> fSelf;
     };
 };
 
 /**
  *  Functions for modifying SkStrings which represent paths on the filesystem.
  */
-class SkOSPath {
+class SkOSPath   {
 public:
     /**
      * Assembles rootPath and relativePath into a single path, like this:
@@ -133,7 +122,7 @@ public:
      *
      * Uses SkPATH_SEPARATOR, to work on all platforms.
      */
-    static SkString SkPathJoin(const char *rootPath, const char *relativePath);
+    static SkString Join(const char* rootPath, const char* relativePath);
 
     /**
      *  Return the name of the file, ignoring the directory structure.
@@ -143,6 +132,17 @@ public:
      *  @return SkString The basename of the file - anything beyond the
      *      final slash, or the full name if there is no slash.
      */
-    static SkString SkBasename(const char* fullPath);
+    static SkString Basename(const char* fullPath);
+
+    /**
+     *  Given a qualified file name returns the directory.
+     *  Behaves like python's os.path.dirname. If the fullPath is
+     *  /dir/subdir/ the return will be /dir/subdir/
+     *  @param fullPath Full path to the file.
+     *  @return SkString The dir containing the file - anything preceding the
+     *      final slash, or the full name if ending in a slash.
+     */
+    static SkString Dirname(const char* fullPath);
 };
+
 #endif

@@ -5,21 +5,21 @@
  * found in the LICENSE file.
  */
 #include "Benchmark.h"
-#include "SkThread.h"
+#include "SkMutex.h"
 
 class MutexBench : public Benchmark {
 public:
-    virtual bool isSuitableFor(Backend backend) SK_OVERRIDE {
+    bool isSuitableFor(Backend backend) override {
         return backend == kNonRendering_Backend;
     }
 
 protected:
-    virtual const char* onGetName() {
+    const char* onGetName() override {
         return "mutex";
     }
 
-    virtual void onDraw(const int loops, SkCanvas*) {
-        SK_DECLARE_STATIC_MUTEX(mu);
+    void onDraw(const int loops, SkCanvas*) override {
+        SkMutex mu;
         for (int i = 0; i < loops; i++) {
             mu.acquire();
             mu.release();

@@ -1,4 +1,3 @@
-
 /*
  * Copyright 2013 Google Inc.
  *
@@ -9,6 +8,7 @@
 #include "gm.h"
 #include "SkBlurMask.h"
 #include "SkBlurMaskFilter.h"
+#include "SkPath.h"
 
 namespace skiagm {
 
@@ -19,19 +19,19 @@ namespace skiagm {
 class BigBlursGM : public GM {
 public:
     BigBlursGM() {
-        this->setBGColor(0xFFDDDDDD);
+        this->setBGColor(sk_tool_utils::color_to_565(0xFFDDDDDD));
     }
 
 protected:
-    virtual SkString onShortName() SK_OVERRIDE {
+    SkString onShortName() override {
         return SkString("bigblurs");
     }
 
-    virtual SkISize onISize() SK_OVERRIDE {
+    SkISize onISize() override {
         return SkISize::Make(kWidth, kHeight);
     }
 
-    virtual void onDraw(SkCanvas* canvas) SK_OVERRIDE {
+    void onDraw(SkCanvas* canvas) override {
         static const int kBig = 65536;
         static const SkScalar kSigma = SkBlurMask::ConvertRadiusToSigma(SkIntToScalar(4));
 

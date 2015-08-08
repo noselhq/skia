@@ -8,6 +8,7 @@
 #ifndef SkGradientShaderPriv_DEFINED
 #define SkGradientShaderPriv_DEFINED
 
+#include "SkGradientBitmapCache.h"
 #include "SkGradientShader.h"
 #include "SkClampRange.h"
 #include "SkColorPriv.h"
@@ -16,7 +17,6 @@
 #include "SkMallocPixelRef.h"
 #include "SkUtils.h"
 #include "SkTemplates.h"
-#include "SkBitmapCache.h"
 #include "SkShader.h"
 #include "SkOnce.h"
 
@@ -89,15 +89,39 @@ public:
             fTileMode = SkShader::kClamp_TileMode;
         }
 
+        const SkMatrix*     fLocalMatrix;
         const SkColor*      fColors;
         const SkScalar*     fPos;
         int                 fCount;
         SkShader::TileMode  fTileMode;
         uint32_t            fGradFlags;
+
+        void flatten(SkWriteBuffer&) const;
+    };
+
+    class DescriptorScope : public Descriptor {
+    public:
+        DescriptorScope() {}
+
+        bool unflatten(SkReadBuffer&);
+
+        // fColors and fPos always point into local memory, so they can be safely mutated
+        //
+        SkColor* mutableColors() { return const_cast<SkColor*>(fColors); }
+        SkScalar* mutablePos() { return const_cast<SkScalar*>(fPos); }
+
+    private:
+        enum {
+            kStorageCount = 16
+        };
+        SkColor fColorStorage[kStorageCount];
+        SkScalar fPosStorage[kStorageCount];
+        SkMatrix fLocalMatrixStorage;
+        SkAutoMalloc fDynamicStorage;
     };
 
 public:
-    SkGradientShaderBase(const Descriptor& desc, const SkMatrix* localMatrix);
+    SkGradientShaderBase(const Descriptor& desc, const SkMatrix& ptsToUnit);
     virtual ~SkGradientShaderBase();
 
     // The cache is initialized on-demand when getCache16/32 is called.
@@ -142,7 +166,7 @@ public:
     public:
         GradientShaderBaseContext(const SkGradientShaderBase& shader, const ContextRec&);
 
-        virtual uint32_t getFlags() const SK_OVERRIDE { return fFlags; }
+        uint32_t getFlags() const override { return fFlags; }
 
     protected:
         SkMatrix    fDstToIndex;
@@ -156,7 +180,7 @@ public:
         typedef SkShader::Context INHERITED;
     };
 
-    virtual bool isOpaque() const SK_OVERRIDE;
+    bool isOpaque() const override;
 
     void getGradientTableBitmap(SkBitmap*) const;
 
@@ -196,10 +220,10 @@ public:
 
 protected:
     SkGradientShaderBase(SkReadBuffer& );
-    virtual void flatten(SkWriteBuffer&) const SK_OVERRIDE;
+    void flatten(SkWriteBuffer&) const override;
     SK_TO_STRING_OVERRIDE()
 
-    SkMatrix    fPtsToUnit;     // set by subclass
+    const SkMatrix fPtsToUnit;
     TileMode    fTileMode;
     TileProc    fTileProc;
     int         fColorCount;
@@ -213,6 +237,8 @@ protected:
 
     void commonAsAGradient(GradientInfo*, bool flipGrad = false) const;
 
+    bool onAsLuminanceColor(SkColor*) const override;
+
     /*
      * Takes in pointers to gradient color and Rec info as colorSrc and recSrc respectively.
      * Count is the number of colors in the gradient
@@ -224,19 +250,15 @@ protected:
                                    SkColor* colorSrc, Rec* recSrc,
                                    int count);
 
-    // V23_COMPATIBILITY_CODE
-    // Used for 2-pt conical gradients since we sort start/end cirlces by radius
-    // Assumes space has already been allocated for fOrigColors
-    void flipGradientColors();
-
 private:
     enum {
         kColorStorageCount = 4, // more than this many colors, and we'll use sk_malloc for the space
 
-        kStorageSize = kColorStorageCount * (sizeof(SkColor) + sizeof(Rec))
+        kStorageSize = kColorStorageCount * (sizeof(SkColor) + sizeof(SkScalar) + sizeof(Rec))
     };
     SkColor     fStorage[(kStorageSize + 3) >> 2];
     SkColor*    fOrigColors; // original colors, before modulation by paint in context.
+    SkScalar*   fOrigPos;   // original positions
     bool        fColorsAreOpaque;
 
     GradientShaderCache* refCache(U8CPU alpha) const;
@@ -271,10 +293,10 @@ static inline int next_dither_toggle16(int toggle) {
 #if SK_SUPPORT_GPU
 
 #include "GrCoordTransform.h"
-#include "gl/GrGLEffect.h"
+#include "GrFragmentProcessor.h"
+#include "gl/GrGLFragmentProcessor.h"
 
-class GrEffectStage;
-class GrBackendEffectFactory;
+class GrInvariantOutput;
 
 /*
  * The interpretation of the texture matrix depends on the sample mode. The
@@ -302,10 +324,11 @@ class GrBackendEffectFactory;
  class GrTextureStripAtlas;
 
 // Base class for Gr gradient effects
-class GrGradientEffect : public GrEffect {
+class GrGradientEffect : public GrFragmentProcessor {
 public:
 
     GrGradientEffect(GrContext* ctx,
+                     GrProcessorDataManager*,
                      const SkGradientShaderBase& shader,
                      const SkMatrix& matrix,
                      SkShader::TileMode tileMode);
@@ -314,8 +337,6 @@ public:
 
     bool useAtlas() const { return SkToBool(-1 != fRow); }
     SkScalar getYCoord() const { return fYCoord; };
-
-    virtual void getConstantColorComponents(GrColor* color, uint32_t* validFlags) const SK_OVERRIDE;
 
     SkGradientShaderBase::GpuColorType getColorType() const { return fColorType; }
 
@@ -347,7 +368,9 @@ protected:
                                     SkScalar** stops,
                                     SkShader::TileMode* tm);
 
-    virtual bool onIsEqual(const GrEffect& effect) const SK_OVERRIDE;
+    bool onIsEqual(const GrFragmentProcessor&) const override;
+
+    void onComputeInvariantOutput(GrInvariantOutput* inout) const override;
 
     const GrCoordTransform& getCoordTransform() const { return fCoordTransform; }
 
@@ -364,19 +387,19 @@ private:
     SkColor fColors[3]; // More than 3 colors we use texture
     PremulType fPremulType; // This only changes behavior for two and three color special cases.
                             // It is already baked into to the table for texture gradients.
-    typedef GrEffect INHERITED;
+    typedef GrFragmentProcessor INHERITED;
 
 };
 
 ///////////////////////////////////////////////////////////////////////////////
 
 // Base class for GL gradient effects
-class GrGLGradientEffect : public GrGLEffect {
+class GrGLGradientEffect : public GrGLFragmentProcessor {
 public:
-    GrGLGradientEffect(const GrBackendEffectFactory& factory);
+    GrGLGradientEffect();
     virtual ~GrGLGradientEffect();
 
-    virtual void setData(const GrGLUniformManager&, const GrDrawEffect&) SK_OVERRIDE;
+    void setData(const GrGLProgramDataManager&, const GrProcessor&) override;
 
 protected:
     /**
@@ -384,19 +407,19 @@ protected:
      * by the base class. The subclasses must stick it in their key and then pass it to the below
      * emit* functions from their emitCode function.
      */
-    static uint32_t GenBaseGradientKey(const GrDrawEffect&);
+    static uint32_t GenBaseGradientKey(const GrProcessor&);
 
     // Emits the uniform used as the y-coord to texture samples in derived classes. Subclasses
     // should call this method from their emitCode().
-    void emitUniforms(GrGLShaderBuilder* builder, uint32_t baseKey);
+    void emitUniforms(GrGLFPBuilder* builder, const GrGradientEffect&);
 
 
     // emit code that gets a fragment's color from an expression for t; Has branches for 3 separate
     // control flows inside -- 2 color gradients, 3 color symmetric gradients (both using
     // native GLSL mix), and 4+ color gradients that use the traditional texture lookup.
-    void emitColor(GrGLShaderBuilder* builder,
+    void emitColor(GrGLFPBuilder* builder,
+                   const GrGradientEffect&,
                    const char* gradientTValue,
-                   uint32_t baseKey,
                    const char* outputColor,
                    const char* inputColor,
                    const TextureSamplerArray& samplers);
@@ -418,29 +441,13 @@ private:
     };
     GR_STATIC_ASSERT(kBaseKeyBitCnt <= 32);
 
-    static SkGradientShaderBase::GpuColorType ColorTypeFromKey(uint32_t baseKey){
-        if (kTwoColorKey == (baseKey & kColorKeyMask)) {
-            return SkGradientShaderBase::kTwo_GpuColorType;
-        } else if (kThreeColorKey == (baseKey & kColorKeyMask)) {
-            return SkGradientShaderBase::kThree_GpuColorType;
-        } else {return SkGradientShaderBase::kTexture_GpuColorType;}
-    }
-
-    static GrGradientEffect::PremulType PremulTypeFromKey(uint32_t baseKey){
-        if (kPremulBeforeInterpKey == (baseKey & kPremulTypeMask)) {
-            return GrGradientEffect::kBeforeInterp_PremulType;
-        } else {
-            return GrGradientEffect::kAfterInterp_PremulType;
-        }
-    }
-
     SkScalar fCachedYCoord;
-    GrGLUniformManager::UniformHandle fFSYUni;
-    GrGLUniformManager::UniformHandle fColorStartUni;
-    GrGLUniformManager::UniformHandle fColorMidUni;
-    GrGLUniformManager::UniformHandle fColorEndUni;
+    GrGLProgramDataManager::UniformHandle fFSYUni;
+    GrGLProgramDataManager::UniformHandle fColorStartUni;
+    GrGLProgramDataManager::UniformHandle fColorMidUni;
+    GrGLProgramDataManager::UniformHandle fColorEndUni;
 
-    typedef GrGLEffect INHERITED;
+    typedef GrGLFragmentProcessor INHERITED;
 };
 
 #endif

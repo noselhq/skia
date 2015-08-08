@@ -13,13 +13,10 @@
     # If these become 'permanent', they should be moved into common_variables.gypi
     #
     'skia_for_android_framework_defines': [
-      'SK_SUPPORT_LEGACY_GETDEVICE',
-      'SK_SUPPORT_LEGACY_BITMAP_CONFIG',
+      'SK_SUPPORT_LEGACY_UNBALANCED_PIXELREF_LOCKCOUNT',
       # Needed until we fix skbug.com/2440.
       'SK_SUPPORT_LEGACY_CLIPTOLAYERFLAG',
-      # Transitional, for deprecated SkCanvas::SaveFlags methods.
-      'SK_ATTR_DEPRECATED=SK_NOTHING_ARG1',
-      'SK_SUPPORT_LEGACY_DEFAULT_PICTURE_CTOR',
+      'SK_IGNORE_LINEONLY_AA_CONVEX_PATH_OPTS',
     ],
   },
 }

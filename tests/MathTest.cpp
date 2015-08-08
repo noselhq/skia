@@ -9,6 +9,7 @@
 #include "SkEndian.h"
 #include "SkFloatBits.h"
 #include "SkFloatingPoint.h"
+#include "SkHalf.h"
 #include "SkMathPriv.h"
 #include "SkPoint.h"
 #include "SkRandom.h"
@@ -264,9 +265,7 @@ static void test_float_conversions(skiatest::Reporter* reporter, float x) {
 static void test_int2float(skiatest::Reporter* reporter, int ival) {
     float x0 = (float)ival;
     float x1 = SkIntToFloatCast(ival);
-    float x2 = SkIntToFloatCast_NoOverflowCheck(ival);
     REPORTER_ASSERT(reporter, x0 == x1);
-    REPORTER_ASSERT(reporter, x0 == x2);
 }
 
 static void unittest_fastfloat(skiatest::Reporter* reporter) {
@@ -326,6 +325,95 @@ static void unittest_isfinite(skiatest::Reporter* reporter) {
     REPORTER_ASSERT(reporter,  SkScalarIsFinite(big));
     REPORTER_ASSERT(reporter,  SkScalarIsFinite(-big));
     REPORTER_ASSERT(reporter,  SkScalarIsFinite(0));
+}
+
+static void unittest_half(skiatest::Reporter* reporter) {
+    static const float gFloats[] = {
+        0.f, 1.f, 0.5f, 0.499999f, 0.5000001f, 1.f/3,
+        -0.f, -1.f, -0.5f, -0.499999f, -0.5000001f, -1.f/3
+    };
+
+    for (size_t i = 0; i < SK_ARRAY_COUNT(gFloats); ++i) {
+        SkHalf h = SkFloatToHalf(gFloats[i]);
+        float f = SkHalfToFloat(h);
+        REPORTER_ASSERT(reporter, SkScalarNearlyEqual(f, gFloats[i]));
+    }
+
+    // check some special values
+    union FloatUnion {
+        uint32_t fU;
+        float    fF;
+    };
+
+    static const FloatUnion largestPositiveHalf = { ((142 << 23) | (1023 << 13)) };
+    SkHalf h = SkFloatToHalf(largestPositiveHalf.fF);
+    float f = SkHalfToFloat(h);
+    REPORTER_ASSERT(reporter, SkScalarNearlyEqual(f, largestPositiveHalf.fF));
+
+    static const FloatUnion largestNegativeHalf = { (1u << 31) | (142u << 23) | (1023u << 13) };
+    h = SkFloatToHalf(largestNegativeHalf.fF);
+    f = SkHalfToFloat(h);
+    REPORTER_ASSERT(reporter, SkScalarNearlyEqual(f, largestNegativeHalf.fF));
+
+    static const FloatUnion smallestPositiveHalf = { 102 << 23 };
+    h = SkFloatToHalf(smallestPositiveHalf.fF);
+    f = SkHalfToFloat(h);
+    REPORTER_ASSERT(reporter, SkScalarNearlyEqual(f, smallestPositiveHalf.fF));
+
+    static const FloatUnion overflowHalf = { ((143 << 23) | (1023 << 13)) };
+    h = SkFloatToHalf(overflowHalf.fF);
+    f = SkHalfToFloat(h);
+    REPORTER_ASSERT(reporter, !SkScalarIsFinite(f) );
+
+    static const FloatUnion underflowHalf = { 101 << 23 };
+    h = SkFloatToHalf(underflowHalf.fF);
+    f = SkHalfToFloat(h);
+    REPORTER_ASSERT(reporter, f == 0.0f );
+
+    static const FloatUnion inf32 = { 255 << 23 };
+    h = SkFloatToHalf(inf32.fF);
+    f = SkHalfToFloat(h);
+    REPORTER_ASSERT(reporter, !SkScalarIsFinite(f) );
+
+    static const FloatUnion nan32 = { 255 << 23 | 1 };
+    h = SkFloatToHalf(nan32.fF);
+    f = SkHalfToFloat(h);
+    REPORTER_ASSERT(reporter, SkScalarIsNaN(f) );
+
+}
+
+static void test_rsqrt(skiatest::Reporter* reporter) {
+    const float maxRelativeError = 6.50196699e-4f;
+
+    // test close to 0 up to 1
+    float input = 0.000001f;
+    for (int i = 0; i < 1000; ++i) {
+        float exact = 1.0f/sk_float_sqrt(input);
+        float estimate = sk_float_rsqrt(input);
+        float relativeError = sk_float_abs(exact - estimate)/exact;
+        REPORTER_ASSERT(reporter, relativeError <= maxRelativeError);
+        input += 0.001f;
+    }
+
+    // test 1 to ~100
+    input = 1.0f;
+    for (int i = 0; i < 1000; ++i) {
+        float exact = 1.0f/sk_float_sqrt(input);
+        float estimate = sk_float_rsqrt(input);
+        float relativeError = sk_float_abs(exact - estimate)/exact;
+        REPORTER_ASSERT(reporter, relativeError <= maxRelativeError);
+        input += 0.01f;
+    }
+
+    // test some big numbers
+    input = 1000000.0f;
+    for (int i = 0; i < 100; ++i) {
+        float exact = 1.0f/sk_float_sqrt(input);
+        float estimate = sk_float_rsqrt(input);
+        float relativeError = sk_float_abs(exact - estimate)/exact;
+        REPORTER_ASSERT(reporter, relativeError <= maxRelativeError);
+        input += 754326.f;
+    }
 }
 
 static void test_muldiv255(skiatest::Reporter* reporter) {
@@ -466,6 +554,8 @@ DEF_TEST(Math, reporter) {
 
     unittest_fastfloat(reporter);
     unittest_isfinite(reporter);
+    unittest_half(reporter);
+    test_rsqrt(reporter);
 
     for (i = 0; i < 10000; i++) {
         SkFixed numer = rand.nextS();
@@ -481,6 +571,9 @@ DEF_TEST(Math, reporter) {
             check = SK_MaxS32;
         } else if (check < -SK_MaxS32) {
             check = SK_MinS32;
+        }
+        if (result != (int32_t)check) {
+            ERRORF(reporter, "\nFixed Divide: %8x / %8x -> %8x %8x\n", numer, denom, result, check);
         }
         REPORTER_ASSERT(reporter, result == (int32_t)check);
     }

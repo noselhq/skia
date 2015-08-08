@@ -1,6 +1,9 @@
-#if !SK_SUPPORT_GPU
-#error "GPU support required"
-#endif
+/*
+ * Copyright 2013 Google Inc.
+ *
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file.
+ */
 
 #include "GrContext.h"
 #include "GrContextFactory.h"
@@ -23,9 +26,13 @@
 #include "SkString.h"
 #include "SkTArray.h"
 #include "SkTDArray.h"
-#include "SkThreadPool.h"
+#include "SkTaskGroup.h"
 #include "SkTime.h"
 #include "Test.h"
+
+#if !SK_SUPPORT_GPU
+#error "GPU support required"
+#endif
 
 #ifdef SK_BUILD_FOR_WIN
     #define PATH_SLASH "\\"
@@ -125,14 +132,12 @@ struct SkpSkGrThreadState {
 };
 
 struct SkpSkGrThreadedTestRunner {
-    SkpSkGrThreadedTestRunner(skiatest::Reporter* reporter, int threadCount)
-        : fNumThreads(threadCount)
-        , fReporter(reporter) {
+    SkpSkGrThreadedTestRunner(skiatest::Reporter* reporter)
+        : fReporter(reporter) {
     }
 
     ~SkpSkGrThreadedTestRunner();
     void render();
-    int fNumThreads;
     SkTDArray<SkpSkGrThreadedRunnable*> fRunnables;
     skiatest::Reporter* fReporter;
 };
@@ -148,7 +153,7 @@ public:
         fTestFun = testFun;
     }
 
-    virtual void run() SK_OVERRIDE {
+    void run() override {
         SkGraphics::SetTLSFontCacheLimit(1 * 1024 * 1024);
         (*fTestFun)(&fState);
     }
@@ -164,10 +169,11 @@ SkpSkGrThreadedTestRunner::~SkpSkGrThreadedTestRunner() {
 }
 
 void SkpSkGrThreadedTestRunner::render() {
-    SkThreadPool pool(fNumThreads);
-    for (int index = 0; index < fRunnables.count(); ++ index) {
-        pool.add(fRunnables[index]);
-    }
+    // TODO: we don't really need to be using SkRunnables here anymore.
+    // We can just write the code we'd run right in the for loop.
+    sk_parallel_for(fRunnables.count(), [&](int i) {
+        fRunnables[i]->run();
+    });
 }
 
 ////////////////////////////////////////////////
@@ -676,8 +682,7 @@ DEF_TEST(SkpSkGrThreaded, reporter) {
     if (!initTest()) {
         return;
     }
-    int threadCount = reporter->allowThreaded() ? 3 : 1;
-    SkpSkGrThreadedTestRunner testRunner(reporter, threadCount);
+    SkpSkGrThreadedTestRunner testRunner(reporter);
     for (int dirIndex = 1; dirIndex <= 100; ++dirIndex) {
         SkString pictDir = make_in_dir_name(dirIndex);
         if (pictDir.size() == 0) {

@@ -9,7 +9,6 @@
 #ifndef SkPathRef_DEFINED
 #define SkPathRef_DEFINED
 
-#include "SkDynamicAnnotations.h"
 #include "SkMatrix.h"
 #include "SkPoint.h"
 #include "SkRect.h"
@@ -37,8 +36,6 @@ class SkWBuffer;
 
 class SK_API SkPathRef : public ::SkRefCnt {
 public:
-    SK_DECLARE_INST_COUNT(SkPathRef);
-
     class Editor {
     public:
         Editor(SkAutoTUnref<SkPathRef>* pathRef,
@@ -144,7 +141,7 @@ public:
      *              fact ovals can report false.
      */
     bool isOval(SkRect* rect) const {
-        if (fIsOval && NULL != rect) {
+        if (fIsOval && rect) {
             *rect = getBounds();
         }
 
@@ -183,19 +180,7 @@ public:
      */
     static void Rewind(SkAutoTUnref<SkPathRef>* pathRef);
 
-    virtual ~SkPathRef() {
-        SkDEBUGCODE(this->validate();)
-        sk_free(fPoints);
-
-        SkDEBUGCODE(fPoints = NULL;)
-        SkDEBUGCODE(fVerbs = NULL;)
-        SkDEBUGCODE(fVerbCnt = 0x9999999;)
-        SkDEBUGCODE(fPointCnt = 0xAAAAAAA;)
-        SkDEBUGCODE(fPointCnt = 0xBBBBBBB;)
-        SkDEBUGCODE(fGenerationID = 0xEEEEEEEE;)
-        SkDEBUGCODE(fEditorsAttached = 0x7777777;)
-    }
-
+    virtual ~SkPathRef();
     int countPoints() const { SkDEBUGCODE(this->validate();) return fPointCnt; }
     int countVerbs() const { SkDEBUGCODE(this->validate();) return fVerbCnt; }
     int countWeights() const { SkDEBUGCODE(this->validate();) return fConicWeights.count(); }
@@ -254,6 +239,15 @@ public:
      */
     uint32_t genID() const;
 
+    struct GenIDChangeListener {
+        virtual ~GenIDChangeListener() {}
+        virtual void onChange() = 0;
+    };
+
+    void addGenIDChangeListener(GenIDChangeListener* listener);
+
+    SkDEBUGCODE(void validate() const;)
+
 private:
     enum SerializationOffsets {
         kIsFinite_SerializationShift = 25,  // requires 1 bit
@@ -279,13 +273,7 @@ private:
 
     // Return true if the computed bounds are finite.
     static bool ComputePtBounds(SkRect* bounds, const SkPathRef& ref) {
-        int count = ref.countPoints();
-        if (count <= 1) {  // we ignore just 1 point (moveto)
-            bounds->setEmpty();
-            return count ? ref.points()->isFinite() : true;
-        } else {
-            return bounds->setBoundsCheck(ref.points(), count);
-        }
+        return bounds->setBoundsCheck(ref.points(), ref.countPoints());
     }
 
     // called, if dirty, by getBounds()
@@ -293,9 +281,9 @@ private:
         SkDEBUGCODE(this->validate();)
         // TODO(mtklein): remove fBoundsIsDirty and fIsFinite,
         // using an inverted rect instead of fBoundsIsDirty and always recalculating fIsFinite.
-        //SkASSERT(fBoundsIsDirty);
+        SkASSERT(fBoundsIsDirty);
 
-        fIsFinite = ComputePtBounds(fBounds.get(), *this);
+        fIsFinite = ComputePtBounds(&fBounds, *this);
         fBoundsIsDirty = false;
     }
 
@@ -303,7 +291,7 @@ private:
         SkASSERT(rect.fLeft <= rect.fRight && rect.fTop <= rect.fBottom);
         fBounds = rect;
         fBoundsIsDirty = false;
-        fIsFinite = fBounds->isFinite();
+        fIsFinite = fBounds.isFinite();
     }
 
     /** Makes additional room but does not change the counts or change the genID */
@@ -416,12 +404,10 @@ private:
         return reinterpret_cast<intptr_t>(fVerbs) - reinterpret_cast<intptr_t>(fPoints);
     }
 
-    SkDEBUGCODE(void validate() const;)
-
     /**
      * Called the first time someone calls CreateEmpty to actually create the singleton.
      */
-    static SkPathRef* CreateEmptyImpl();
+    friend SkPathRef* sk_create_empty_pathref();
 
     void setIsOval(bool isOval) { fIsOval = isOval; }
 
@@ -431,13 +417,15 @@ private:
         return fPoints;
     }
 
+    void callGenIDChangeListeners();
+
     enum {
         kMinSize = 256,
     };
 
-    mutable SkTRacyReffable<SkRect> fBounds;
-    mutable SkTRacy<uint8_t>        fBoundsIsDirty;
-    mutable SkTRacy<SkBool8>        fIsFinite;    // only meaningful if bounds are valid
+    mutable SkRect   fBounds;
+    mutable uint8_t  fBoundsIsDirty;
+    mutable SkBool8  fIsFinite;    // only meaningful if bounds are valid
 
     SkBool8  fIsOval;
     uint8_t  fSegmentMask;
@@ -454,6 +442,8 @@ private:
     };
     mutable uint32_t    fGenerationID;
     SkDEBUGCODE(int32_t fEditorsAttached;) // assert that only one editor in use at any time.
+
+    SkTDArray<GenIDChangeListener*> fGenIDChangeListeners;  // pointers are owned
 
     friend class PathRefTest_Private;
     typedef SkRefCnt INHERITED;

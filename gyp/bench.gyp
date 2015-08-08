@@ -1,3 +1,7 @@
+# Copyright 2015 Google Inc.
+#
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
 # GYP file to build performance testbench.
 #
 {
@@ -6,47 +10,40 @@
   ],
   'targets': [
     {
-      'target_name': 'bench',
+      'target_name': 'nanobench',
       'type': 'executable',
-      'dependencies': [
-        'flags.gyp:flags',
-        'jsoncpp.gyp:jsoncpp',
-        'skia_lib.gyp:skia_lib',
-        'tools.gyp:crash_handler',
-        'tools.gyp:timer',
-      ],
       'sources': [
-        '../bench/BenchLogger.cpp',
-        '../bench/BenchLogger.h',
-        '../bench/GMBench.cpp',
-        '../bench/GMBench.h',
-        '../bench/ResultsWriter.cpp',
-        '../bench/benchmain.cpp',
-      ],
-      'conditions': [
-        ['skia_android_framework == 1', {
-          'libraries': [ '-lskia' ],
-        }],
+        '../gm/gm.cpp',
       ],
       'includes': [
         'bench.gypi',
         'gmslides.gypi',
       ],
-    },
-    {
-      'target_name': 'nanobench',
-      'type': 'executable',
-      'sources': [
-        '../bench/nanobench.cpp',
-        '../bench/ResultsWriter.cpp',
-      ],
-      'includes': [ 'bench.gypi' ],
       'dependencies': [
         'flags.gyp:flags_common',
         'jsoncpp.gyp:jsoncpp',
         'skia_lib.gyp:skia_lib',
         'tools.gyp:crash_handler',
+        'tools.gyp:proc_stats',
         'tools.gyp:timer',
+      ],
+      'conditions': [
+        ['skia_android_framework', {
+          'libraries': [
+            '-lskia',
+            '-landroid',
+            '-lgui',
+            '-lhwui',
+            '-lutils',
+          ],
+          'include_dirs': [
+            '../../../frameworks/base/libs/hwui/',
+            '../../../frameworks/native/include/',
+          ],
+          'dependencies': [
+            'utils.gyp:android_utils',
+          ],
+        }],
       ],
     },
   ],

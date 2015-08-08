@@ -12,7 +12,6 @@
 #include "SkCanvas.h"
 #include "SkCommonFlags.h"
 #include "SkGraphics.h"
-#include "SkThreadPool.h"
 #include "SkWindow.h"
 #include "sk_tool_utils.h"
 
@@ -62,7 +61,6 @@ int dm_main();
 
 IOS_launch_type set_cmd_line_args(int argc, char *argv[], const char* resourceDir) {
     SkCommandLineFlags::Parse(argc, argv);
-    SetResourcePath(resourceDir);
     if (FLAGS_nanobench) {
         return nanobench_main() ? kError_iOSLaunchType : kTool_iOSLaunchType;
     }

@@ -114,13 +114,13 @@ public:
 
     // Remove the entry with this key.  We require that an entry with this key is present.
     void remove(const Key& key) {
-        SkASSERT(NULL != this->find(key));
+        SkASSERT(this->find(key));
         this->innerRemove(key);
         SkASSERT(this->validate());
     }
 
     void rewind() {
-        if (NULL != fArray) {
+        if (fArray) {
             sk_bzero(fArray, sizeof(T*)* fCapacity);
         }
         fCount = 0;
@@ -161,7 +161,7 @@ private:
     static T* Deleted() { return reinterpret_cast<T*>(1); }  // Also an invalid pointer.
 
     bool validate() const {
-        #define SKTDYNAMICHASH_CHECK(x) SkASSERT((x)); if (!(x)) return false
+        #define SKTDYNAMICHASH_CHECK(x) SkASSERT(x); if (!(x)) return false
         static const int kLarge = 50;  // Arbitrary, tweak to suit your patience.
 
         // O(1) checks, always done.
@@ -177,7 +177,7 @@ private:
                     deleted++;
                 } else if (Empty() != fArray[i]) {
                     count++;
-                    SKTDYNAMICHASH_CHECK(NULL != this->find(GetKey(*fArray[i])));
+                    SKTDYNAMICHASH_CHECK(this->find(GetKey(*fArray[i])));
                 }
             }
             SKTDYNAMICHASH_CHECK(count == fCount);

@@ -6,76 +6,72 @@
  */
 
 #include "GrSimpleTextureEffect.h"
-#include "gl/GrGLEffect.h"
-#include "gl/GrGLShaderBuilder.h"
-#include "gl/GrGLSL.h"
-#include "gl/GrGLTexture.h"
-#include "GrTBackendEffectFactory.h"
+#include "GrInvariantOutput.h"
 #include "GrTexture.h"
+#include "gl/GrGLCaps.h"
+#include "gl/GrGLFragmentProcessor.h"
+#include "gl/GrGLTexture.h"
+#include "gl/builders/GrGLProgramBuilder.h"
 
-class GrGLSimpleTextureEffect : public GrGLEffect {
+class GrGLSimpleTextureEffect : public GrGLFragmentProcessor {
 public:
-    GrGLSimpleTextureEffect(const GrBackendEffectFactory& factory, const GrDrawEffect&)
-        : INHERITED (factory) {
-    }
+    GrGLSimpleTextureEffect(const GrProcessor&) {}
 
-    virtual void emitCode(GrGLShaderBuilder* builder,
-                          const GrDrawEffect& drawEffect,
-                          const GrEffectKey& key,
-                          const char* outputColor,
-                          const char* inputColor,
-                          const TransformedCoordsArray& coords,
-                          const TextureSamplerArray& samplers) SK_OVERRIDE {
-        builder->fsCodeAppendf("\t%s = ", outputColor);
-        builder->fsAppendTextureLookupAndModulate(inputColor,
-                                                  samplers[0],
-                                                  coords[0].c_str(),
-                                                  coords[0].type());
-        builder->fsCodeAppend(";\n");
+    virtual void emitCode(EmitArgs& args) override {
+        GrGLFragmentBuilder* fsBuilder = args.fBuilder->getFragmentShaderBuilder();
+        fsBuilder->codeAppendf("\t%s = ", args.fOutputColor);
+        fsBuilder->appendTextureLookupAndModulate(args.fInputColor,
+                                                  args.fSamplers[0],
+                                                  args.fCoords[0].c_str(),
+                                                  args.fCoords[0].getType());
+        fsBuilder->codeAppend(";\n");
     }
 
 private:
-    typedef GrGLEffect INHERITED;
+    typedef GrGLFragmentProcessor INHERITED;
 };
 
 ///////////////////////////////////////////////////////////////////////////////
 
-void GrSimpleTextureEffect::getConstantColorComponents(GrColor* color, uint32_t* validFlags) const {
-    this->updateConstantColorComponentsForModulation(color, validFlags);
+void GrSimpleTextureEffect::onComputeInvariantOutput(GrInvariantOutput* inout) const {
+    this->updateInvariantOutputForModulation(inout);
 }
 
-const GrBackendEffectFactory& GrSimpleTextureEffect::getFactory() const {
-    return GrTBackendEffectFactory<GrSimpleTextureEffect>::getInstance();
+void GrSimpleTextureEffect::onGetGLProcessorKey(const GrGLSLCaps& caps,
+                                              GrProcessorKeyBuilder* b) const {
+    GrGLSimpleTextureEffect::GenKey(*this, caps, b);
+}
+
+GrGLFragmentProcessor* GrSimpleTextureEffect::createGLInstance() const  {
+    return SkNEW_ARGS(GrGLSimpleTextureEffect, (*this));
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 
-GR_DEFINE_EFFECT_TEST(GrSimpleTextureEffect);
+GR_DEFINE_FRAGMENT_PROCESSOR_TEST(GrSimpleTextureEffect);
 
-GrEffect* GrSimpleTextureEffect::TestCreate(SkRandom* random,
-                                            GrContext*,
-                                            const GrDrawTargetCaps&,
-                                            GrTexture* textures[]) {
-    int texIdx = random->nextBool() ? GrEffectUnitTest::kSkiaPMTextureIdx :
-                                      GrEffectUnitTest::kAlphaTextureIdx;
+GrFragmentProcessor* GrSimpleTextureEffect::TestCreate(GrProcessorTestData* d) {
+    int texIdx = d->fRandom->nextBool() ? GrProcessorUnitTest::kSkiaPMTextureIdx :
+                                          GrProcessorUnitTest::kAlphaTextureIdx;
     static const SkShader::TileMode kTileModes[] = {
         SkShader::kClamp_TileMode,
         SkShader::kRepeat_TileMode,
         SkShader::kMirror_TileMode,
     };
     SkShader::TileMode tileModes[] = {
-        kTileModes[random->nextULessThan(SK_ARRAY_COUNT(kTileModes))],
-        kTileModes[random->nextULessThan(SK_ARRAY_COUNT(kTileModes))],
+        kTileModes[d->fRandom->nextULessThan(SK_ARRAY_COUNT(kTileModes))],
+        kTileModes[d->fRandom->nextULessThan(SK_ARRAY_COUNT(kTileModes))],
     };
-    GrTextureParams params(tileModes, random->nextBool() ? GrTextureParams::kBilerp_FilterMode :
-                                                           GrTextureParams::kNone_FilterMode);
+    GrTextureParams params(tileModes, d->fRandom->nextBool() ? GrTextureParams::kBilerp_FilterMode :
+                                                               GrTextureParams::kNone_FilterMode);
 
     static const GrCoordSet kCoordSets[] = {
         kLocal_GrCoordSet,
-        kPosition_GrCoordSet
+        kDevice_GrCoordSet
     };
-    GrCoordSet coordSet = kCoordSets[random->nextULessThan(SK_ARRAY_COUNT(kCoordSets))];
+    GrCoordSet coordSet = kCoordSets[d->fRandom->nextULessThan(SK_ARRAY_COUNT(kCoordSets))];
 
-    const SkMatrix& matrix = GrEffectUnitTest::TestMatrix(random);
-    return GrSimpleTextureEffect::Create(textures[texIdx], matrix, coordSet);
+    const SkMatrix& matrix = GrTest::TestMatrix(d->fRandom);
+    return GrSimpleTextureEffect::Create(d->fProcDataManager, d->fTextures[texIdx], matrix,
+                                         coordSet);
 }

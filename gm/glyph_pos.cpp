@@ -27,11 +27,8 @@ public:
         }
 
 protected:
-    virtual uint32_t onGetFlags() const SK_OVERRIDE {
-        return kSkipTiled_Flag;
-    }
 
-    virtual SkString onShortName() SK_OVERRIDE {
+    SkString onShortName() override {
         SkString str("glyph_pos");
         if (fStrokeWidth == 0.0f) {
             str.append("_h"); // h == Hairline.
@@ -48,12 +45,9 @@ protected:
         return str;
     }
 
-    virtual SkISize onISize() { return SkISize::Make(800, 600); }
+    SkISize onISize() override { return SkISize::Make(800, 600); }
 
-    virtual void onDraw(SkCanvas* canvas) SK_OVERRIDE {
-        if (!fProp) {
-            fProp.reset(SkTypeface::CreateFromName("Helvetica", SkTypeface::kNormal));
-        }
+    void onDraw(SkCanvas* canvas) override {
 
         // There's a black pixel at 40, 40 for reference.
         canvas->drawPoint(40.0f, 40.0f, SK_ColorBLACK);
@@ -85,10 +79,8 @@ protected:
         canvas->scale(3.0f, 3.0f);
         SkMatrix skew;
         skew.setIdentity();
-        skew.setSkewX(SkScalarDiv(8.0f,
-                                  25.0f));
-        skew.setSkewY(SkScalarDiv(2.0f,
-                                  25.0f));
+        skew.setSkewX(8.0f / 25.0f);
+        skew.setSkewY(2.0f / 25.0f);
         canvas->concat(skew);
         drawTestCase(canvas, 1.0f);
         canvas->restore();
@@ -98,11 +90,9 @@ protected:
         canvas->save();
         SkMatrix perspective;
         perspective.setIdentity();
-        perspective.setPerspX(-SkScalarDiv(SK_Scalar1, 340.0f));
-        perspective.setSkewX(SkScalarDiv(8.0f,
-                                         25.0f));
-        perspective.setSkewY(SkScalarDiv(2.0f,
-                                         25.0f));
+        perspective.setPerspX(-SkScalarInvert(340));
+        perspective.setSkewX(8.0f / 25.0f);
+        perspective.setSkewY(2.0f / 25.0f);
 
 
         canvas->concat(perspective);
@@ -115,8 +105,7 @@ protected:
         paint.setColor(SK_ColorBLACK);
         paint.setAntiAlias(true);
         paint.setTextSize(kTextHeight * textScale);
-        paint.setTypeface(fProp);
-        paint.setDevKernText(true);
+        sk_tool_utils::set_portable_typeface(&paint);
         paint.setStrokeWidth(fStrokeWidth);
         paint.setStyle(fStrokeStyle);
 
@@ -165,7 +154,6 @@ protected:
     }
 
 private:
-    SkAutoTUnref<SkTypeface> fProp;
     SkScalar fStrokeWidth;
     SkPaint::Style fStrokeStyle;
 

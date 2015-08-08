@@ -8,6 +8,7 @@
 #include "gm.h"
 #include "SkCanvas.h"
 #include "SkGradientShader.h"
+#include "SkPath.h"
 #include "SkSurface.h"
 
 #if SK_SUPPORT_GPU
@@ -80,7 +81,8 @@ protected:
         canvas->translate(SkIntToScalar(20), SkIntToScalar(20));
 
         SkPaint paint;
-        paint.setColor(0x80FF0000);
+        sk_tool_utils::set_portable_typeface(&paint);
+        paint.setColor(0x80F60000);
 
         const Proc procs[] = {
             draw_hair, draw_thick, draw_rect, draw_oval, draw_text

@@ -42,13 +42,13 @@ SkOSWindow::SkOSWindow(void*)
 }
 
 SkOSWindow::~SkOSWindow() {
-    this->closeWindow();
+    this->internalCloseWindow();
 }
 
-void SkOSWindow::closeWindow() {
-    if (NULL != fUnixWindow.fDisplay) {
+void SkOSWindow::internalCloseWindow() {
+    if (fUnixWindow.fDisplay) {
         this->detach();
-        SkASSERT(NULL != fUnixWindow.fGc);
+        SkASSERT(fUnixWindow.fGc);
         XFreeGC(fUnixWindow.fDisplay, fUnixWindow.fGc);
         fUnixWindow.fGc = NULL;
         XDestroyWindow(fUnixWindow.fDisplay, fUnixWindow.fWin);
@@ -61,12 +61,12 @@ void SkOSWindow::closeWindow() {
 
 void SkOSWindow::initWindow(int requestedMSAASampleCount, AttachmentInfo* info) {
     if (fMSAASampleCount != requestedMSAASampleCount) {
-        this->closeWindow();
+        this->internalCloseWindow();
     }
     // presence of fDisplay means we already have a window
-    if (NULL != fUnixWindow.fDisplay) {
-        if (NULL != info) {
-            if (NULL != fVi) {
+    if (fUnixWindow.fDisplay) {
+        if (info) {
+            if (fVi) {
                 glXGetConfig(fUnixWindow.fDisplay, fVi, GLX_SAMPLES_ARB, &info->fSampleCount);
                 glXGetConfig(fUnixWindow.fDisplay, fVi, GLX_STENCIL_SIZE, &info->fStencilBits);
             } else {
@@ -110,7 +110,7 @@ void SkOSWindow::initWindow(int requestedMSAASampleCount, AttachmentInfo* info) 
     }
 
     if (fVi) {
-        if (NULL != info) {
+        if (info) {
             glXGetConfig(dsp, fVi, GLX_SAMPLES_ARB, &info->fSampleCount);
             glXGetConfig(dsp, fVi, GLX_STENCIL_SIZE, &info->fStencilBits);
         }
@@ -132,7 +132,7 @@ void SkOSWindow::initWindow(int requestedMSAASampleCount, AttachmentInfo* info) 
                                          CWEventMask | CWColormap,
                                          &swa);
     } else {
-        if (NULL != info) {
+        if (info) {
             info->fSampleCount = 0;
             info->fStencilBits = 0;
         }
@@ -310,7 +310,7 @@ void SkOSWindow::loop() {
 }
 
 void SkOSWindow::mapWindowAndWait() {
-    SkASSERT(NULL != fUnixWindow.fDisplay);
+    SkASSERT(fUnixWindow.fDisplay);
     Display* dsp = fUnixWindow.fDisplay;
     Window win = fUnixWindow.fWin;
     XMapWindow(dsp, win);
@@ -326,6 +326,29 @@ void SkOSWindow::mapWindowAndWait() {
 
 }
 
+////////////////////////////////////////////////
+
+// Some helper code to load the correct version of glXSwapInterval
+#define GLX_GET_PROC_ADDR(name) glXGetProcAddress(reinterpret_cast<const GLubyte*>((name)))
+#define EXT_WRANGLE(name, type, ...) \
+    if (GLX_GET_PROC_ADDR(#name)) { \
+        static type k##name; \
+        if (!k##name) { \
+            k##name = (type) GLX_GET_PROC_ADDR(#name); \
+        } \
+        k##name(__VA_ARGS__); \
+        SkDebugf("using %s\n", #name); \
+        return; \
+    }
+
+static void glXSwapInterval(Display* dsp, GLXDrawable drawable, int interval) {
+    EXT_WRANGLE(glXSwapIntervalEXT, PFNGLXSWAPINTERVALEXTPROC, dsp, drawable, interval);
+    EXT_WRANGLE(glXSwapIntervalMESA, PFNGLXSWAPINTERVALMESAPROC, interval);
+    EXT_WRANGLE(glXSwapIntervalSGI, PFNGLXSWAPINTERVALSGIPROC, interval);
+}
+
+/////////////////////////////////////////////////////////////////////////
+
 bool SkOSWindow::attach(SkBackEndTypes, int msaaSampleCount, AttachmentInfo* info) {
     this->initWindow(msaaSampleCount, info);
 
@@ -333,7 +356,7 @@ bool SkOSWindow::attach(SkBackEndTypes, int msaaSampleCount, AttachmentInfo* inf
         return false;
     }
     if (NULL == fUnixWindow.fGLContext) {
-        SkASSERT(NULL != fVi);
+        SkASSERT(fVi);
 
         fUnixWindow.fGLContext = glXCreateContext(fUnixWindow.fDisplay,
                                                   fVi,
@@ -365,7 +388,7 @@ void SkOSWindow::detach() {
 }
 
 void SkOSWindow::present() {
-    if (NULL != fUnixWindow.fDisplay && NULL != fUnixWindow.fGLContext) {
+    if (fUnixWindow.fDisplay && fUnixWindow.fGLContext) {
         glXSwapBuffers(fUnixWindow.fDisplay, fUnixWindow.fWin);
     }
 }
@@ -405,7 +428,7 @@ void SkOSWindow::doPaint() {
         return;
     }
     // If we are drawing with GL, we don't need XPutImage.
-    if (NULL != fUnixWindow.fGLContext) {
+    if (fUnixWindow.fGLContext) {
         return;
     }
     // Draw the bitmap to the screen.
@@ -425,6 +448,62 @@ void SkOSWindow::doPaint() {
               0, 0,     // src x,y
               0, 0,     // dst x,y
               width, height);
+}
+
+enum {
+    _NET_WM_STATE_REMOVE =0,
+    _NET_WM_STATE_ADD = 1,
+    _NET_WM_STATE_TOGGLE =2
+};
+
+bool SkOSWindow::makeFullscreen() {
+    Display* dsp = fUnixWindow.fDisplay;
+    if (NULL == dsp) {
+        return false;
+    }
+
+    // Full screen
+    Atom wm_state = XInternAtom(dsp, "_NET_WM_STATE", False);
+    Atom fullscreen = XInternAtom(dsp, "_NET_WM_STATE_FULLSCREEN", False);
+
+    XEvent evt;
+    sk_bzero(&evt, sizeof(evt));
+    evt.type = ClientMessage;
+    evt.xclient.window = fUnixWindow.fWin;
+    evt.xclient.message_type = wm_state;
+    evt.xclient.format = 32;
+    evt.xclient.data.l[0] = _NET_WM_STATE_ADD;
+    evt.xclient.data.l[1] = fullscreen;
+    evt.xclient.data.l[2] = 0;
+
+    XSendEvent(dsp, DefaultRootWindow(dsp), False,
+               SubstructureRedirectMask | SubstructureNotifyMask, &evt);
+    return true;
+}
+
+void SkOSWindow::setVsync(bool vsync) {
+    if (fUnixWindow.fDisplay && fUnixWindow.fGLContext && fUnixWindow.fWin) {
+        int swapInterval = vsync ? 1 : 0;
+        glXSwapInterval(fUnixWindow.fDisplay, fUnixWindow.fWin, swapInterval);
+    }
+}
+
+void SkOSWindow::closeWindow() {
+    Display* dsp = fUnixWindow.fDisplay;
+    if (NULL == dsp) {
+        return;
+    }
+
+    XEvent evt;
+    sk_bzero(&evt, sizeof(evt));
+    evt.type = ClientMessage;
+    evt.xclient.message_type = XInternAtom(dsp, "WM_PROTOCOLS", true);
+    evt.xclient.window = fUnixWindow.fWin;
+    evt.xclient.format = 32;
+    evt.xclient.data.l[0] = XInternAtom(dsp, "WM_DELETE_WINDOW", false);
+    evt.xclient.data.l[1] = CurrentTime;
+
+    XSendEvent(dsp, fUnixWindow.fWin, false, NoEventMask, &evt);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

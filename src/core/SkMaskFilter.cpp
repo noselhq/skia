@@ -10,6 +10,8 @@
 #include "SkMaskFilter.h"
 #include "SkBlitter.h"
 #include "SkDraw.h"
+#include "SkCachedData.h"
+#include "SkPath.h"
 #include "SkRasterClip.h"
 #include "SkRRect.h"
 #include "SkTypes.h"
@@ -19,6 +21,15 @@
 #include "SkGr.h"
 #include "SkGrPixelRef.h"
 #endif
+
+SkMaskFilter::NinePatch::~NinePatch() {
+    if (fCache) {
+        SkASSERT((const void*)fMask.fImage == fCache->data());
+        fCache->unref();
+    } else {
+        SkMask::FreeImage(fMask.fImage);
+    }
+}
 
 bool SkMaskFilter::filterMask(SkMask*, const SkMask&, const SkMatrix&,
                               SkIPoint*) const {
@@ -198,7 +209,7 @@ static void draw_nine(const SkMask& mask, const SkIRect& outerR, const SkIPoint&
 }
 
 static int countNestedRects(const SkPath& path, SkRect rects[2]) {
-    if (path.isNestedRects(rects)) {
+    if (path.isNestedFillRects(rects)) {
         return 2;
     }
     return path.isRect(&rects[0]);
@@ -219,7 +230,6 @@ bool SkMaskFilter::filterRRect(const SkRRect& devRRect, const SkMatrix& matrix,
         return false;
     }
     draw_nine(patch.fMask, patch.fOuterRect, patch.fCenter, true, clip, blitter);
-    SkMask::FreeImage(patch.fMask.fImage);
     return true;
 }
 
@@ -234,9 +244,7 @@ bool SkMaskFilter::filterPath(const SkPath& devPath, const SkMatrix& matrix,
     if (rectCount > 0) {
         NinePatch patch;
 
-        patch.fMask.fImage = NULL;
-        switch (this->filterRectsToNine(rects, rectCount, matrix,
-                                        clip.getBounds(), &patch)) {
+        switch (this->filterRectsToNine(rects, rectCount, matrix, clip.getBounds(), &patch)) {
             case kFalse_FilterReturn:
                 SkASSERT(NULL == patch.fMask.fImage);
                 return false;
@@ -244,7 +252,6 @@ bool SkMaskFilter::filterPath(const SkPath& devPath, const SkMatrix& matrix,
             case kTrue_FilterReturn:
                 draw_nine(patch.fMask, patch.fOuterRect, patch.fCenter, 1 == rectCount, clip,
                           blitter);
-                SkMask::FreeImage(patch.fMask.fImage);
                 return true;
 
             case kUnimplemented_FilterReturn:
@@ -298,7 +305,7 @@ SkMaskFilter::filterRectsToNine(const SkRect[], int count, const SkMatrix&,
 }
 
 #if SK_SUPPORT_GPU
-bool SkMaskFilter::asNewEffect(GrEffect** effect, GrTexture*, const SkMatrix&) const {
+bool SkMaskFilter::asFragmentProcessor(GrFragmentProcessor**, GrTexture*, const SkMatrix&) const {
     return false;
 }
 
@@ -309,16 +316,24 @@ bool SkMaskFilter::canFilterMaskGPU(const SkRect& devBounds,
     return false;
 }
 
- bool SkMaskFilter::directFilterMaskGPU(GrContext* context,
+ bool SkMaskFilter::directFilterMaskGPU(GrTextureProvider* texProvider,
+                                        GrDrawContext* drawContext,
+                                        GrRenderTarget* rt,
                                         GrPaint* grp,
+                                        const GrClip&,
+                                        const SkMatrix& viewMatrix,
                                         const SkStrokeRec& strokeRec,
                                         const SkPath& path) const {
     return false;
 }
 
 
-bool SkMaskFilter::directFilterRRectMaskGPU(GrContext* context,
+bool SkMaskFilter::directFilterRRectMaskGPU(GrTextureProvider* texProvider,
+                                            GrDrawContext* drawContext,
+                                            GrRenderTarget* rt,
                                             GrPaint* grp,
+                                            const GrClip&,
+                                            const SkMatrix& viewMatrix,
                                             const SkStrokeRec& strokeRec,
                                             const SkRRect& rrect) const {
     return false;
@@ -337,7 +352,7 @@ void SkMaskFilter::computeFastBounds(const SkRect& src, SkRect* dst) const {
     SkMask  srcM, dstM;
 
     srcM.fImage = NULL;
-    src.roundOut(&srcM.fBounds);
+    srcM.fBounds = src.roundOut();
     srcM.fRowBytes = 0;
     srcM.fFormat = SkMask::kA8_Format;
 

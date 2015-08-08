@@ -254,7 +254,7 @@ DEF_TEST(CanvasState_test_complex_clips, reporter) {
 
 class TestDrawFilter : public SkDrawFilter {
 public:
-    virtual bool filter(SkPaint*, Type) SK_OVERRIDE { return true; }
+    bool filter(SkPaint*, Type) override { return true; }
 };
 
 DEF_TEST(CanvasState_test_draw_filters, reporter) {
@@ -270,7 +270,7 @@ DEF_TEST(CanvasState_test_draw_filters, reporter) {
     SkCanvas* tmpCanvas = SkCanvasStateUtils::CreateFromCanvasState(state);
     REPORTER_ASSERT(reporter, tmpCanvas);
 
-    REPORTER_ASSERT(reporter, NULL != canvas.getDrawFilter());
+    REPORTER_ASSERT(reporter, canvas.getDrawFilter());
     REPORTER_ASSERT(reporter, NULL == tmpCanvas->getDrawFilter());
 
     tmpCanvas->unref();
@@ -302,6 +302,7 @@ DEF_TEST(CanvasState_test_soft_clips, reporter) {
 }
 
 #ifdef SK_SUPPORT_LEGACY_CLIPTOLAYERFLAG
+#include "SkClipStack.h"
 DEF_TEST(CanvasState_test_saveLayer_clip, reporter) {
     const int WIDTH = 100;
     const int HEIGHT = 100;

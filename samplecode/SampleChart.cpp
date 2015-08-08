@@ -8,6 +8,7 @@
 #include "SampleCode.h"
 #include "SkCanvas.h"
 #include "SkPaint.h"
+#include "SkPath.h"
 #include "SkRandom.h"
 #include "SkView.h"
 
@@ -60,7 +61,7 @@ static void gen_paths(const SkTDArray<SkScalar>& topData,
         x += xDelta;
     }
 
-    if (NULL != bottomData) {
+    if (bottomData) {
         SkASSERT(bottomData->count() == topData.count());
         // iterate backwards over the previous graph's data to generate the bottom of the filled
         // area (and account for leftShift).
@@ -88,7 +89,7 @@ public:
     }
 
 protected:
-    virtual bool onQuery(SkEvent* evt) SK_OVERRIDE {
+    bool onQuery(SkEvent* evt) override {
         if (SampleCode::TitleQ(*evt)) {
             SampleCode::TitleR(evt, "Chart");
             return true;
@@ -96,7 +97,7 @@ protected:
         return this->INHERITED::onQuery(evt);
     }
 
-    virtual void onDrawContent(SkCanvas* canvas) SK_OVERRIDE {
+    void onDrawContent(SkCanvas* canvas) override {
         bool sizeChanged = false;
         if (canvas->getDeviceSize() != fSize) {
             fSize = canvas->getDeviceSize();

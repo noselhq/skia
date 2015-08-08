@@ -15,14 +15,20 @@ DECLARE_bool(cpu);
 DECLARE_bool(dryRun);
 DECLARE_bool(gpu);
 DECLARE_string(gpuAPI);
-DECLARE_bool(leaks);
+DECLARE_string(images);
 DECLARE_string(match);
 DECLARE_bool(quiet);
 DECLARE_bool(resetGpuContext);
-DECLARE_bool(single);
+DECLARE_bool(preAbandonGpuContext);
+DECLARE_bool(abandonGpuContext);
+DECLARE_string(skps);
 DECLARE_int32(threads);
 DECLARE_string(resourcePath);
 DECLARE_bool(verbose);
 DECLARE_bool(veryVerbose);
+DECLARE_string(writePath);
+
+DECLARE_string(key);
+DECLARE_string(properties);
 
 #endif

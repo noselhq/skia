@@ -6,11 +6,11 @@
  */
 
 #include "SkCommonFlags.h"
-#include "SkThreadPool.h"
 
-DEFINE_string(config, "565 8888 pdf gpu nonrendering",
-              "Options: 565 8888 pdf gpu nonrendering msaa4 msaa16 nvprmsaa4 nvprmsaa16 "
-              "gpunull gpudebug angle mesa");
+DEFINE_string(config, "565 8888 gpu nonrendering angle hwui ", "Options: "
+              "565 8888 angle debug gpu gpudebug gpudft gpunull hwui mesa "
+              "msaa16 msaa4 nonrendering null nullgpu nvprmsaa16 nvprmsaa4 "
+              "pdf skp svg xps (and maybe more)");
 
 DEFINE_bool(cpu, true, "master switch for running CPU-bound work.");
 
@@ -24,7 +24,7 @@ DEFINE_string(gpuAPI, "", "Force use of specific gpu API.  Using \"gl\" "
               "Defaults to empty string, which selects the API native to the "
               "system.");
 
-DEFINE_bool2(leaks, l, false, "show leaked ref cnt'd objects.");
+DEFINE_string(images, "", "Directory of images to decode.");
 
 DEFINE_string2(match, m, NULL,
                "[~][^]substring[$] [...] of GM name to run.\n"
@@ -38,13 +38,23 @@ DEFINE_string2(match, m, NULL,
 
 DEFINE_bool2(quiet, q, false, "if true, don't print status updates.");
 
-DEFINE_bool(resetGpuContext, true, "Reset the GrContext before running each bench.");
+DEFINE_bool(preAbandonGpuContext, false, "Abandons the GrContext before running the test.");
 
-DEFINE_bool2(single, z, false, "run tests on a single thread internally.");
+DEFINE_bool(abandonGpuContext, false, "Abandon the GrContext after running each test.");
 
-DEFINE_int32(threads, SkThreadPool::kThreadPerCore,
-             "run threadsafe tests on a threadpool with this many threads.");
+DEFINE_string(skps, "skps", "Directory to read skps from.");
+
+DEFINE_int32(threads, -1, "Run threadsafe tests on a threadpool with this many extra threads, "
+                          "defaulting to one extra thread per core.");
 
 DEFINE_bool2(verbose, v, false, "enable verbose output from the test driver.");
 
 DEFINE_bool2(veryVerbose, V, false, "tell individual tests to be verbose.");
+
+DEFINE_string2(writePath, w, "", "If set, write bitmaps here as .pngs.");
+
+DEFINE_string(key, "",
+              "Space-separated key/value pairs to add to JSON identifying this builder.");
+DEFINE_string(properties, "",
+              "Space-separated key/value pairs to add to JSON identifying this run.");
+

@@ -5,10 +5,10 @@
  * found in the LICENSE file.
  */
 
-
 #include "gm.h"
-#include "SkCanvas.h"
 #include "SkAAClip.h"
+#include "SkCanvas.h"
+#include "SkPath.h"
 
 namespace skiagm {
 
@@ -49,7 +49,10 @@ public:
 
     SimpleClipGM(SkGeomTypes geomType)
     : fGeomType(geomType) {
+    }
 
+protected:
+    void onOnceBeforeDraw() override {
         // offset the rects a bit so we get anti-aliasing in the rect case
         fBase.set(100.65f,
                   100.65f,
@@ -61,10 +64,9 @@ public:
 
         fBasePath.addRoundRect(fBase, SkIntToScalar(5), SkIntToScalar(5));
         fRectPath.addRoundRect(fRect, SkIntToScalar(5), SkIntToScalar(5));
-        INHERITED::setBGColor(0xFFDDDDDD);
+        INHERITED::setBGColor(sk_tool_utils::color_to_565(0xFFDDDDDD));
     }
 
-protected:
     void buildRgn(SkAAClip* clip, SkRegion::Op op) {
         clip->setPath(fBasePath, NULL, true);
 
@@ -124,7 +126,7 @@ protected:
         canvas->restore();
     }
 
-    virtual SkString onShortName() {
+    SkString onShortName() override {
         SkString str;
         str.printf("simpleaaclip_%s",
                     kRect_GeomType == fGeomType ? "rect" :
@@ -133,11 +135,11 @@ protected:
         return str;
     }
 
-    virtual SkISize onISize() {
+    SkISize onISize() override {
         return SkISize::Make(640, 480);
     }
 
-    virtual void onDraw(SkCanvas* canvas) {
+    void onDraw(SkCanvas* canvas) override {
 
         static const struct {
             SkColor         fColor;
@@ -146,7 +148,7 @@ protected:
         } gOps[] = {
             { SK_ColorBLACK,    "Difference", SkRegion::kDifference_Op    },
             { SK_ColorRED,      "Intersect",  SkRegion::kIntersect_Op     },
-            { 0xFF008800,       "Union",      SkRegion::kUnion_Op         },
+            { sk_tool_utils::color_to_565(0xFF008800), "Union", SkRegion::kUnion_Op },
             { SK_ColorGREEN,    "Rev Diff",   SkRegion::kReverseDifference_Op },
             { SK_ColorYELLOW,   "Replace",    SkRegion::kReplace_Op       },
             { SK_ColorBLUE,     "XOR",        SkRegion::kXOR_Op           },
@@ -154,6 +156,7 @@ protected:
 
         SkPaint textPaint;
         textPaint.setAntiAlias(true);
+        sk_tool_utils::set_portable_typeface(&textPaint);
         textPaint.setTextSize(SK_Scalar1*24);
         int xOff = 0;
 

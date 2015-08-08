@@ -5,9 +5,10 @@
  * found in the LICENSE file.
  */
 
-#include "gm.h"
-#include "SkDisplacementMapEffect.h"
 #include "SkBitmapSource.h"
+#include "SkDisplacementMapEffect.h"
+#include "gm.h"
+#include "sk_tool_utils.h"
 
 namespace skiagm {
 
@@ -38,7 +39,7 @@ protected:
         SkPaint paint;
         paint.setAntiAlias(true);
         sk_tool_utils::set_portable_typeface(&paint);
-        paint.setColor(0xFF884422);
+        paint.setColor(sk_tool_utils::color_to_565(0xFF884422));
         paint.setTextSize(SkIntToScalar(96));
         const char* str = "g";
         canvas.drawText(str, strlen(str), SkIntToScalar(15), SkIntToScalar(55), paint);
@@ -47,22 +48,8 @@ protected:
     void make_checkerboard(SkBitmap* bitmap, int w, int h) {
         bitmap->allocN32Pixels(w, h);
         SkCanvas canvas(*bitmap);
-        canvas.clear(0x00000000);
-        SkPaint darkPaint;
-        darkPaint.setColor(0xFF804020);
-        SkPaint lightPaint;
-        lightPaint.setColor(0xFF244484);
-        for (int y = 0; y < h; y += 16) {
-          for (int x = 0; x < w; x += 16) {
-            canvas.save();
-            canvas.translate(SkIntToScalar(x), SkIntToScalar(y));
-            canvas.drawRect(SkRect::MakeXYWH(0, 0, 8, 8), darkPaint);
-            canvas.drawRect(SkRect::MakeXYWH(8, 0, 8, 8), lightPaint);
-            canvas.drawRect(SkRect::MakeXYWH(0, 8, 8, 8), lightPaint);
-            canvas.drawRect(SkRect::MakeXYWH(8, 8, 8, 8), darkPaint);
-            canvas.restore();
-          }
-        }
+        sk_tool_utils::draw_checkerboard(&canvas, sk_tool_utils::color_to_565(0xFF244484),
+            sk_tool_utils::color_to_565(0xFF804020), 8);
     }
 
     virtual SkISize onISize() {
@@ -82,7 +69,7 @@ protected:
             make_bitmaps();
             fInitialized = true;
         }
-        canvas->clear(0x00000000);
+        canvas->clear(SK_ColorBLACK);
         SkPaint paint;
         SkAutoTUnref<SkImageFilter> displ(SkBitmapSource::Create(fCheckerboard));
         paint.setImageFilter(SkDisplacementMapEffect::Create(

@@ -26,7 +26,7 @@ static void make_bitmaps(int w, int h, SkBitmap* src, SkBitmap* dst,
 
     {
         SkCanvas c(*src);
-        p.setColor(0xFFFFCC44);
+        p.setColor(sk_tool_utils::color_to_565(0xFFFFCC44));
         r.set(0, 0, ww*3/4, hh*3/4);
         c.drawOval(r, p);
     }
@@ -36,7 +36,7 @@ static void make_bitmaps(int w, int h, SkBitmap* src, SkBitmap* dst,
 
     {
         SkCanvas c(*dst);
-        p.setColor(0xFF66AAFF);
+        p.setColor(sk_tool_utils::color_to_565(0xFF66AAFF));
         r.set(ww/3, hh/3, ww*19/20, hh*19/20);
         c.drawRect(r, p);
     }
@@ -84,13 +84,17 @@ class XfermodesGM : public GM {
         bool restoreNeeded = false;
         m.setTranslate(x, y);
 
-        canvas->drawBitmapMatrix(fSrcB, m, &p);
+        canvas->drawBitmap(fSrcB, x, y, &p);
         p.setXfermode(mode);
         switch (srcType) {
-            case kSmallTransparentImage_SrcType:
+            case kSmallTransparentImage_SrcType: {
                 m.postScale(SK_ScalarHalf, SK_ScalarHalf, x, y);
-                canvas->drawBitmapMatrix(fTransparent, m, &p);
+
+                SkAutoCanvasRestore acr(canvas, true);
+                canvas->concat(m);
+                canvas->drawBitmap(fTransparent, 0, 0, &p);
                 break;
+            }
             case kQuarterClearInLayer_SrcType: {
                 SkRect bounds = SkRect::MakeXYWH(x, y, SkIntToScalar(W),
                                                  SkIntToScalar(H));
@@ -102,11 +106,11 @@ class XfermodesGM : public GM {
             case kQuarterClear_SrcType: {
                 SkScalar halfW = SkIntToScalar(W) / 2;
                 SkScalar halfH = SkIntToScalar(H) / 2;
-                p.setColor(0xFF66AAFF);
+                p.setColor(sk_tool_utils::color_to_565(0xFF66AAFF));
                 SkRect r = SkRect::MakeXYWH(x + halfW, y, halfW,
                                             SkIntToScalar(H));
                 canvas->drawRect(r, p);
-                p.setColor(0xFFAA66FF);
+                p.setColor(sk_tool_utils::color_to_565(0xFFAA66FF));
                 r = SkRect::MakeXYWH(x, y + halfH, SkIntToScalar(W), halfH);
                 canvas->drawRect(r, p);
                 break;
@@ -125,7 +129,7 @@ class XfermodesGM : public GM {
                 SkScalar h = SkIntToScalar(H);
                 SkRect r = SkRect::MakeXYWH(x + w / 3, y + h / 3,
                                             w * 37 / 60, h * 37 / 60);
-                p.setColor(0xFF66AAFF);
+                p.setColor(sk_tool_utils::color_to_565(0xFF66AAFF));
                 canvas->drawRect(r, p);
                 break;
             }
@@ -135,9 +139,12 @@ class XfermodesGM : public GM {
             case kRectangleImageWithAlpha_SrcType:
                 p.setAlpha(0x88);
                 // Fall through.
-            case kRectangleImage_SrcType:
-                canvas->drawBitmapMatrix(fDstB, m, &p);
+            case kRectangleImage_SrcType: {
+                SkAutoCanvasRestore acr(canvas, true);
+                canvas->concat(m);
+                canvas->drawBitmap(fDstB, 0, 0, &p);
                 break;
+            }
             default:
                 break;
         }
@@ -147,7 +154,7 @@ class XfermodesGM : public GM {
         }
     }
 
-    virtual void onOnceBeforeDraw() SK_OVERRIDE {
+    void onOnceBeforeDraw() override {
         fBG.installPixels(SkImageInfo::Make(2, 2, kARGB_4444_SkColorType,
                                             kOpaque_SkAlphaType),
                           gData, 4);
@@ -161,15 +168,15 @@ public:
     XfermodesGM() {}
 
 protected:
-    virtual SkString onShortName() {
+    SkString onShortName() override {
         return SkString("xfermodes");
     }
 
-    virtual SkISize onISize() {
+    SkISize onISize() override {
         return SkISize::Make(1990, 640);
     }
 
-    virtual void onDraw(SkCanvas* canvas) {
+    void onDraw(SkCanvas* canvas) override {
         canvas->translate(SkIntToScalar(10), SkIntToScalar(20));
 
         const struct {
@@ -225,6 +232,7 @@ protected:
 
         SkPaint labelP;
         labelP.setAntiAlias(true);
+        sk_tool_utils::set_portable_typeface(&labelP);
         labelP.setTextAlign(SkPaint::kCenter_Align);
 
         const int W = 5;

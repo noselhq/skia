@@ -10,34 +10,49 @@
 
 #include "SkTypes.h"
 
+namespace SkOpts {
+    extern void (*memset16)(uint16_t[], uint16_t, int);
+    extern void (*memset32)(uint32_t[], uint32_t, int);
+}
+
 ///////////////////////////////////////////////////////////////////////////////
+
+// The inlining heuristics below were determined using bench/MemsetBench.cpp
+// on a x86 desktop, a Nexus 7 with and without NEON, and a Nexus 9:
+//   - on x86, inlining was never faster,
+//   - on ARMv7, inlining was faster for N<=10.  Putting this check inside the NEON
+//     code was not helpful; it's got to be here outside.
+//   - NEON code generation for ARMv8 with GCC 4.9 is terrible,
+//     making the NEON code ~8x slower that just a serial loop.
 
 /** Similar to memset(), but it assigns a 16bit value into the buffer.
     @param buffer   The memory to have value copied into it
     @param value    The 16bit value to be copied into buffer
     @param count    The number of times value should be copied into the buffer.
 */
-void sk_memset16(uint16_t dst[], uint16_t value, int count);
-typedef void (*SkMemset16Proc)(uint16_t dst[], uint16_t value, int count);
-SkMemset16Proc SkMemset16GetPlatformProc();
+static inline void sk_memset16(uint16_t buffer[], uint16_t value, int count) {
+#if defined(SK_CPU_ARM64)
+    while (count --> 0) { *buffer++ = value; } return;
+#elif defined(SK_CPU_ARM32)
+    if (count <= 10) { while (count --> 0) { *buffer++ = value; } return; }
+#endif
+    SkOpts::memset16(buffer, value, count);
+}
 
 /** Similar to memset(), but it assigns a 32bit value into the buffer.
     @param buffer   The memory to have value copied into it
     @param value    The 32bit value to be copied into buffer
     @param count    The number of times value should be copied into the buffer.
 */
-void sk_memset32(uint32_t dst[], uint32_t value, int count);
-typedef void (*SkMemset32Proc)(uint32_t dst[], uint32_t value, int count);
-SkMemset32Proc SkMemset32GetPlatformProc();
+static inline void sk_memset32(uint32_t buffer[], uint32_t value, int count) {
+#if defined(SK_CPU_ARM64)
+    while (count --> 0) { *buffer++ = value; } return;
+#elif defined(SK_CPU_ARM32)
+    if (count <= 10) { while (count --> 0) { *buffer++ = value; } return; }
+#endif
+    SkOpts::memset32(buffer, value, count);
+}
 
-/** Similar to memcpy(), but it copies count 32bit values from src to dst.
-    @param dst      The memory to have value copied into it
-    @param src      The memory to have value copied from it
-    @param count    The number of values should be copied.
-*/
-void sk_memcpy32(uint32_t dst[], const uint32_t src[], int count);
-typedef void (*SkMemcpy32Proc)(uint32_t dst[], const uint32_t src[], int count);
-SkMemcpy32Proc SkMemcpy32GetPlatformProc();
 
 ///////////////////////////////////////////////////////////////////////////////
 

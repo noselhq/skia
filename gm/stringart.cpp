@@ -23,19 +23,16 @@ public:
     StringArtGM() {}
 
 protected:
-    virtual uint32_t onGetFlags() const SK_OVERRIDE {
-        return kSkipTiled_Flag;
-    }
 
-    virtual SkString onShortName() {
+    SkString onShortName() override {
         return SkString("stringart");
     }
 
-    virtual SkISize onISize() {
+    SkISize onISize() override {
         return SkISize::Make(kWidth, kHeight);
     }
 
-    virtual void onDraw(SkCanvas* canvas) {
+    void onDraw(SkCanvas* canvas) override {
         SkScalar angle = kAngle*SK_ScalarPI + SkScalarHalf(SK_ScalarPI);
         SkScalar size = SkIntToScalar(SkMin32(kWidth, kHeight));
         SkPoint center = SkPoint::Make(SkScalarHalf(kWidth), SkScalarHalf(kHeight));
@@ -50,7 +47,7 @@ protected:
             SkPoint rp = SkPoint::Make(length*SkScalarCos(step) + center.fX,
                                        length*SkScalarSin(step) + center.fY);
             path.lineTo(rp);
-            length += SkScalarDiv(angle, SkScalarHalf(SK_ScalarPI));
+            length += angle / SkScalarHalf(SK_ScalarPI);
             step += angle;
         }
         path.close();
@@ -58,7 +55,7 @@ protected:
         SkPaint paint;
         paint.setAntiAlias(true);
         paint.setStyle(SkPaint::kStroke_Style);
-        paint.setColor(0xFF007700);
+        paint.setColor(sk_tool_utils::color_to_565(0xFF007700));
 
         canvas->drawPath(path, paint);
     }

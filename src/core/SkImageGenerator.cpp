@@ -7,15 +7,6 @@
 
 #include "SkImageGenerator.h"
 
-#ifndef SK_SUPPORT_LEGACY_IMAGEGENERATORAPI
-bool SkImageGenerator::getInfo(SkImageInfo* info) {
-    SkImageInfo dummy;
-    if (NULL == info) {
-        info = &dummy;
-    }
-    return this->onGetInfo(info);
-}
-
 bool SkImageGenerator::getPixels(const SkImageInfo& info, void* pixels, size_t rowBytes,
                                  SkPMColor ctable[], int* ctableCount) {
     if (kUnknown_SkColorType == info.colorType()) {
@@ -40,8 +31,7 @@ bool SkImageGenerator::getPixels(const SkImageInfo& info, void* pixels, size_t r
         ctable = NULL;
     }
 
-    bool success = this->onGetPixels(info, pixels, rowBytes, ctable, ctableCount);
-
+    const bool success = this->onGetPixels(info, pixels, rowBytes, ctable, ctableCount);
     if (success && ctableCount) {
         SkASSERT(*ctableCount >= 0 && *ctableCount <= 256);
     }
@@ -55,15 +45,15 @@ bool SkImageGenerator::getPixels(const SkImageInfo& info, void* pixels, size_t r
     }
     return this->getPixels(info, pixels, rowBytes, NULL, NULL);
 }
-#endif
 
-bool SkImageGenerator::getYUV8Planes(SkISize sizes[3], void* planes[3], size_t rowBytes[3]) {
+bool SkImageGenerator::getYUV8Planes(SkISize sizes[3], void* planes[3], size_t rowBytes[3],
+                                     SkYUVColorSpace* colorSpace) {
 #ifdef SK_DEBUG
     // In all cases, we need the sizes array
-    SkASSERT(NULL != sizes);
+    SkASSERT(sizes);
 
-    bool isValidWithPlanes = (NULL != planes) && (NULL != rowBytes) &&
-        ((NULL != planes[0]) && (NULL != planes[1]) && (NULL != planes[2]) &&
+    bool isValidWithPlanes = (planes) && (rowBytes) &&
+        ((planes[0]) && (planes[1]) && (planes[2]) &&
          (0  != rowBytes[0]) && (0  != rowBytes[1]) && (0  != rowBytes[2]));
     bool isValidWithoutPlanes =
         ((NULL == planes) ||
@@ -89,11 +79,23 @@ bool SkImageGenerator::getYUV8Planes(SkISize sizes[3], void* planes[3], size_t r
               (rowBytes[2] >= (size_t)sizes[2].fWidth)));
 #endif
 
-    return this->onGetYUV8Planes(sizes, planes, rowBytes);
+    return this->onGetYUV8Planes(sizes, planes, rowBytes, colorSpace);
 }
 
 bool SkImageGenerator::onGetYUV8Planes(SkISize sizes[3], void* planes[3], size_t rowBytes[3]) {
     return false;
+}
+
+bool SkImageGenerator::onGetYUV8Planes(SkISize sizes[3], void* planes[3], size_t rowBytes[3],
+                                       SkYUVColorSpace* colorSpace) {
+    // In order to maintain compatibility with clients that implemented the original
+    // onGetYUV8Planes interface, we assume that the color space is JPEG.
+    // TODO(rileya): remove this and the old onGetYUV8Planes once clients switch over to
+    // the new interface.
+    if (colorSpace) {
+        *colorSpace = kJPEG_SkYUVColorSpace;
+    }
+    return this->onGetYUV8Planes(sizes, planes, rowBytes);
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -102,10 +104,33 @@ SkData* SkImageGenerator::onRefEncodedData() {
     return NULL;
 }
 
-bool SkImageGenerator::onGetInfo(SkImageInfo*) {
+bool SkImageGenerator::onGetPixels(const SkImageInfo& info, void* dst, size_t rb,
+                                   SkPMColor* colors, int* colorCount) {
     return false;
 }
 
-bool SkImageGenerator::onGetPixels(const SkImageInfo&, void*, size_t, SkPMColor*, int*) {
-    return false;
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+#include "SkGraphics.h"
+
+static SkGraphics::ImageGeneratorFromEncodedFactory gFactory;
+
+SkGraphics::ImageGeneratorFromEncodedFactory
+SkGraphics::SetImageGeneratorFromEncodedFactory(ImageGeneratorFromEncodedFactory factory)
+{
+    ImageGeneratorFromEncodedFactory prev = gFactory;
+    gFactory = factory;
+    return prev;
+}
+
+SkImageGenerator* SkImageGenerator::NewFromEncoded(SkData* data) {
+    if (NULL == data) {
+        return NULL;
+    }
+    if (gFactory) {
+        if (SkImageGenerator* generator = gFactory(data)) {
+            return generator;
+        }
+    }
+    return SkImageGenerator::NewFromEncodedImpl(data);
 }

@@ -5,16 +5,17 @@
  * found in the LICENSE file.
  */
 
+#include "SkAtomics.h"
 #include "SkBitmapProcShader.h"
+#include "SkColorShader.h"
 #include "SkEmptyShader.h"
-#include "SkReadBuffer.h"
 #include "SkMallocPixelRef.h"
 #include "SkPaint.h"
 #include "SkPicture.h"
 #include "SkPictureShader.h"
+#include "SkReadBuffer.h"
 #include "SkScalar.h"
 #include "SkShader.h"
-#include "SkThread.h"
 #include "SkWriteBuffer.h"
 
 //#define SK_TRACK_SHADER_LIFETIME
@@ -43,15 +44,8 @@ SkShader::SkShader(const SkMatrix* localMatrix) {
     } else {
         fLocalMatrix.reset();
     }
-}
-
-SkShader::SkShader(SkReadBuffer& buffer) : INHERITED(buffer) {
-    inc_shader_counter();
-    if (buffer.readBool()) {
-        buffer.readMatrix(&fLocalMatrix);
-    } else {
-        fLocalMatrix.reset();
-    }
+    // Pre-cache so future calls to fLocalMatrix.getType() are threadsafe.
+    (void)fLocalMatrix.getType();
 }
 
 SkShader::~SkShader() {
@@ -77,6 +71,18 @@ bool SkShader::computeTotalInverse(const ContextRec& rec, SkMatrix* totalInverse
         m = &total;
     }
     return m->invert(totalInverse);
+}
+
+bool SkShader::asLuminanceColor(SkColor* colorPtr) const {
+    SkColor storage;
+    if (NULL == colorPtr) {
+        colorPtr = &storage;
+    }
+    if (this->onAsLuminanceColor(colorPtr)) {
+        *colorPtr = SkColorSetA(*colorPtr, 0xFF);   // we only return opaque
+        return true;
+    }
+    return false;
 }
 
 SkShader::Context* SkShader::createContext(const ContextRec& rec, void* storage) const {
@@ -208,9 +214,9 @@ SkShader::GradientType SkShader::asAGradient(GradientInfo* info) const {
     return kNone_GradientType;
 }
 
-bool SkShader::asNewEffect(GrContext* context, const SkPaint& paint,
-                           const SkMatrix* localMatrixOrNull, GrColor* paintColor,
-                           GrEffect** effect)  const {
+bool SkShader::asFragmentProcessor(GrContext*, const SkPaint&, const SkMatrix&, const SkMatrix*,
+                                   GrColor*, GrProcessorDataManager*,
+                                   GrFragmentProcessor**)  const {
     return false;
 }
 
@@ -222,14 +228,18 @@ SkShader* SkShader::CreateEmptyShader() {
     return SkNEW(SkEmptyShader);
 }
 
-SkShader* SkShader::CreateBitmapShader(const SkBitmap& src, TileMode tmx, TileMode tmy,
-                                       const SkMatrix* localMatrix) {
-    return ::CreateBitmapShader(src, tmx, tmy, localMatrix, NULL);
+SkShader* SkShader::CreateColorShader(SkColor color) {
+    return SkNEW_ARGS(SkColorShader, (color));
 }
 
-SkShader* SkShader::CreatePictureShader(SkPicture* src, TileMode tmx, TileMode tmy,
+SkShader* SkShader::CreateBitmapShader(const SkBitmap& src, TileMode tmx, TileMode tmy,
                                        const SkMatrix* localMatrix) {
-    return SkPictureShader::Create(src, tmx, tmy, localMatrix);
+    return SkCreateBitmapShader(src, tmx, tmy, localMatrix, NULL);
+}
+
+SkShader* SkShader::CreatePictureShader(const SkPicture* src, TileMode tmx, TileMode tmy,
+                                        const SkMatrix* localMatrix, const SkRect* tile) {
+    return SkPictureShader::Create(src, tmx, tmy, localMatrix, tile);
 }
 
 #ifndef SK_IGNORE_TO_STRING
@@ -243,7 +253,6 @@ void SkShader::toString(SkString* str) const {
 
 //////////////////////////////////////////////////////////////////////////////
 
-#include "SkColorShader.h"
 #include "SkUtils.h"
 
 SkColorShader::SkColorShader(SkColor c)
@@ -254,21 +263,11 @@ bool SkColorShader::isOpaque() const {
     return SkColorGetA(fColor) == 255;
 }
 
-SkColorShader::SkColorShader(SkReadBuffer& b) : INHERITED(b) {
-    // V25_COMPATIBILITY_CODE We had a boolean to make the color shader inherit the paint's
-    // color. We don't support that any more.
-    if (b.isVersionLT(SkReadBuffer::kColorShaderNoBool_Version)) {
-        if (b.readBool()) {
-            SkDEBUGFAIL("We shouldn't have pictures that recorded the inherited case.");
-            fColor = SK_ColorWHITE;
-            return;
-        }
-    }
-    fColor = b.readColor();
+SkFlattenable* SkColorShader::CreateProc(SkReadBuffer& buffer) {
+    return SkNEW_ARGS(SkColorShader, (buffer.readColor()));
 }
 
 void SkColorShader::flatten(SkWriteBuffer& buffer) const {
-    this->INHERITED::flatten(buffer);
     buffer.writeColor(fColor);
 }
 
@@ -347,10 +346,10 @@ SkShader::GradientType SkColorShader::asAGradient(GradientInfo* info) const {
 
 #include "SkGr.h"
 
-bool SkColorShader::asNewEffect(GrContext* context, const SkPaint& paint,
-                                const SkMatrix* localMatrix, GrColor* paintColor,
-                                GrEffect** effect) const {
-    *effect = NULL;
+bool SkColorShader::asFragmentProcessor(GrContext*, const SkPaint& paint, const SkMatrix&,
+                                        const SkMatrix*, GrColor* paintColor,
+                                        GrProcessorDataManager*, GrFragmentProcessor** fp) const {
+    *fp = NULL;
     SkColor skColor = fColor;
     U8CPU newA = SkMulDiv255Round(SkColorGetA(fColor), paint.getAlpha());
     *paintColor = SkColor2GrColor(SkColorSetA(skColor, newA));
@@ -359,9 +358,9 @@ bool SkColorShader::asNewEffect(GrContext* context, const SkPaint& paint,
 
 #else
 
-bool SkColorShader::asNewEffect(GrContext* context, const SkPaint& paint,
-                                     const SkMatrix* localMatrix, GrColor* paintColor,
-                                     GrEffect** effect) const {
+bool SkColorShader::asFragmentProcessor(GrContext*, const SkPaint&, const SkMatrix&,
+                                        const SkMatrix*, GrColor*, GrProcessorDataManager*,
+                                        GrFragmentProcessor**) const {
     SkDEBUGFAIL("Should not call in GPU-less build");
     return false;
 }
@@ -382,6 +381,10 @@ void SkColorShader::toString(SkString* str) const {
 #endif
 
 ///////////////////////////////////////////////////////////////////////////////
+
+SkFlattenable* SkEmptyShader::CreateProc(SkReadBuffer&) {
+    return SkShader::CreateEmptyShader();
+}
 
 #ifndef SK_IGNORE_TO_STRING
 #include "SkEmptyShader.h"

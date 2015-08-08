@@ -16,10 +16,9 @@ static void sk_free_releaseproc(void* ptr, void*) {
 }
 
 static bool is_valid(const SkImageInfo& info, SkColorTable* ctable) {
-    if (info.fWidth < 0 ||
-        info.fHeight < 0 ||
-        (unsigned)info.fColorType > (unsigned)kLastEnum_SkColorType ||
-        (unsigned)info.fAlphaType > (unsigned)kLastEnum_SkAlphaType)
+    if (info.width() < 0 || info.height() < 0 ||
+        (unsigned)info.colorType() > (unsigned)kLastEnum_SkColorType ||
+        (unsigned)info.alphaType() > (unsigned)kLastEnum_SkAlphaType)
     {
         return false;
     }
@@ -31,7 +30,7 @@ static bool is_valid(const SkImageInfo& info, SkColorTable* ctable) {
     if (kIndex8_SkColorType == info.fColorType && NULL == ctable) {
         return false;
     }
-    if (kIndex8_SkColorType != info.fColorType && NULL != ctable) {
+    if (kIndex8_SkColorType != info.fColorType && ctable) {
         return false;
     }
 #endif
@@ -57,8 +56,9 @@ SkMallocPixelRef* SkMallocPixelRef::NewAllocate(const SkImageInfo& info,
         return NULL;
     }
 
-    int32_t minRB = SkToS32(info.minRowBytes());
-    if (minRB < 0) {
+    // only want to permit 31bits of rowBytes
+    int64_t minRB = (int64_t)info.minRowBytes64();
+    if (minRB < 0 || !sk_64_isS32(minRB)) {
         return NULL;    // allocation will be too large
     }
     if (requestedRowBytes > 0 && (int32_t)requestedRowBytes < minRB) {
@@ -72,7 +72,7 @@ SkMallocPixelRef* SkMallocPixelRef::NewAllocate(const SkImageInfo& info,
         rowBytes = minRB;
     }
 
-    int64_t bigSize = (int64_t)info.fHeight * rowBytes;
+    int64_t bigSize = (int64_t)info.height() * rowBytes;
     if (!sk_64_isS32(bigSize)) {
         return NULL;
     }
@@ -142,7 +142,7 @@ SkMallocPixelRef::SkMallocPixelRef(const SkImageInfo& info, void* storage,
     SkASSERT(is_valid(info, ctable));
     SkASSERT(rowBytes >= info.minRowBytes());
 
-    if (kIndex_8_SkColorType != info.fColorType) {
+    if (kIndex_8_SkColorType != info.colorType()) {
         ctable = NULL;
     }
 
@@ -165,7 +165,7 @@ SkMallocPixelRef::SkMallocPixelRef(const SkImageInfo& info, void* storage,
     SkASSERT(is_valid(info, ctable));
     SkASSERT(rowBytes >= info.minRowBytes());
 
-    if (kIndex_8_SkColorType != info.fColorType) {
+    if (kIndex_8_SkColorType != info.colorType()) {
         ctable = NULL;
     }
 

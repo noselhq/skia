@@ -10,9 +10,10 @@
 #define GrAtlas_DEFINED
 
 
-#include "SkPoint.h"
+#include "SkTDArray.h"
 #include "GrTexture.h"
-#include "GrDrawTarget.h"
+#include "SkPoint.h"
+#include "SkTInternalLList.h"
 
 class GrGpu;
 class GrRectanizer;
@@ -40,11 +41,6 @@ public:
 
     bool addSubImage(int width, int height, const void*, SkIPoint16*);
 
-    GrDrawTarget::DrawToken drawToken() const { return fDrawToken; }
-    void setDrawToken(GrDrawTarget::DrawToken draw) { fDrawToken = draw; }
-
-    void uploadToTexture();
-
     void resetRects();
 
 private:
@@ -52,9 +48,6 @@ private:
     ~GrPlot(); // does not try to delete the fNext field
     void init(GrAtlas* atlas, int id, int offX, int offY, int width, int height, size_t bpp,
               bool batchUploads);
-
-    // for recycling
-    GrDrawTarget::DrawToken fDrawToken;
 
     int                     fID;
     unsigned char*          fPlotData;
@@ -80,13 +73,19 @@ public:
     public:
         bool isEmpty() const { return 0 == fPlots.count(); }
 
+#ifdef SK_DEBUG
+        bool contains(const GrPlot* plot) const { 
+            return fPlots.contains(const_cast<GrPlot*>(plot)); 
+        }
+#endif
+
     private:
         SkTDArray<GrPlot*> fPlots;
 
         friend class GrAtlas;
     };
 
-    GrAtlas(GrGpu*, GrPixelConfig, GrTextureFlags flags, 
+    GrAtlas(GrGpu*, GrPixelConfig, GrSurfaceFlags flags, 
             const SkISize& backingTextureSize,
             int numPlotsX, int numPlotsY, bool batchUploads);
     ~GrAtlas();
@@ -101,22 +100,28 @@ public:
     // remove reference to this plot
     static void RemovePlot(ClientPlotUsage* usage, const GrPlot* plot);
 
-    // get a plot that's not being used by the current draw
-    // this allows us to overwrite this plot without flushing
-    GrPlot* getUnusedPlot();
-
     GrTexture* getTexture() const {
         return fTexture;
     }
 
-    void uploadPlotsToTexture();
+    enum IterOrder {
+        kLRUFirst_IterOrder,
+        kMRUFirst_IterOrder
+    };
+
+    typedef GrPlotList::Iter PlotIter;
+    GrPlot* iterInit(PlotIter* iter, IterOrder order) {
+        return iter->init(fPlotList, kLRUFirst_IterOrder == order
+                                                       ? GrPlotList::Iter::kTail_IterStart
+                                                       : GrPlotList::Iter::kHead_IterStart);
+    }
 
 private:
     void makeMRU(GrPlot* plot);
 
     GrGpu*         fGpu;
     GrPixelConfig  fPixelConfig;
-    GrTextureFlags fFlags;
+    GrSurfaceFlags fFlags;
     GrTexture*     fTexture;
     SkISize        fBackingTextureSize;
     int            fNumPlotsX;

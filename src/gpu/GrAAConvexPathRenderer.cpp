@@ -8,22 +8,26 @@
 
 #include "GrAAConvexPathRenderer.h"
 
+#include "GrAAConvexTessellator.h"
+#include "GrBatchTarget.h"
+#include "GrBatchTest.h"
+#include "GrCaps.h"
 #include "GrContext.h"
-#include "GrDrawState.h"
-#include "GrDrawTargetCaps.h"
-#include "GrEffect.h"
+#include "GrDefaultGeoProcFactory.h"
+#include "GrGeometryProcessor.h"
+#include "GrInvariantOutput.h"
 #include "GrPathUtils.h"
-#include "GrTBackendEffectFactory.h"
+#include "GrProcessor.h"
+#include "GrPipelineBuilder.h"
+#include "GrStrokeInfo.h"
+#include "SkGeometry.h"
+#include "SkPathPriv.h"
 #include "SkString.h"
-#include "SkStrokeRec.h"
 #include "SkTraceEvent.h"
-
-#include "gl/GrGLEffect.h"
-#include "gl/GrGLShaderBuilder.h"
-#include "gl/GrGLSL.h"
-#include "gl/GrGLVertexEffect.h"
-
-#include "effects/GrVertexEffect.h"
+#include "batches/GrBatch.h"
+#include "gl/GrGLProcessor.h"
+#include "gl/GrGLGeometryProcessor.h"
+#include "gl/builders/GrGLProgramBuilder.h"
 
 GrAAConvexPathRenderer::GrAAConvexPathRenderer() {
 }
@@ -101,7 +105,7 @@ static void center_of_mass(const SegmentArray& segments, SkPoint* c) {
         *c = avg;
     } else {
         area *= 3;
-        area = SkScalarDiv(SK_Scalar1, area);
+        area = SkScalarInvert(area);
         center.fX = SkScalarMul(center.fX, area);
         center.fY = SkScalarMul(center.fY, area);
         // undo the translate of p0 to the origin.
@@ -112,7 +116,7 @@ static void center_of_mass(const SegmentArray& segments, SkPoint* c) {
 
 static void compute_vectors(SegmentArray* segments,
                             SkPoint* fanPt,
-                            SkPath::Direction dir,
+                            SkPathPriv::FirstDirection dir,
                             int* vCount,
                             int* iCount) {
     center_of_mass(*segments, fanPt);
@@ -120,7 +124,7 @@ static void compute_vectors(SegmentArray* segments,
 
     // Make the normals point towards the outside
     SkPoint::Side normSide;
-    if (dir == SkPath::kCCW_Direction) {
+    if (dir == SkPathPriv::kCCW_FirstDirection) {
         normSide = SkPoint::kRight_Side;
     } else {
         normSide = SkPoint::kLeft_Side;
@@ -208,8 +212,9 @@ static void update_degenerate_test(DegenerateTestData* data, const SkPoint& pt) 
     }
 }
 
-static inline bool get_direction(const SkPath& path, const SkMatrix& m, SkPath::Direction* dir) {
-    if (!path.cheapComputeDirection(dir)) {
+static inline bool get_direction(const SkPath& path, const SkMatrix& m,
+                                 SkPathPriv::FirstDirection* dir) {
+    if (!SkPathPriv::CheapComputeFirstDirection(path, dir)) {
         return false;
     }
     // check whether m reverses the orientation
@@ -217,52 +222,40 @@ static inline bool get_direction(const SkPath& path, const SkMatrix& m, SkPath::
     SkScalar det2x2 = SkScalarMul(m.get(SkMatrix::kMScaleX), m.get(SkMatrix::kMScaleY)) -
                       SkScalarMul(m.get(SkMatrix::kMSkewX), m.get(SkMatrix::kMSkewY));
     if (det2x2 < 0) {
-        *dir = SkPath::OppositeDirection(*dir);
+        *dir = SkPathPriv::OppositeFirstDirection(*dir);
     }
     return true;
 }
 
 static inline void add_line_to_segment(const SkPoint& pt,
-                                       SegmentArray* segments,
-                                       SkRect* devBounds) {
+                                       SegmentArray* segments) {
     segments->push_back();
     segments->back().fType = Segment::kLine;
     segments->back().fPts[0] = pt;
-    devBounds->growToInclude(pt.fX, pt.fY);
 }
-
-#ifdef SK_DEBUG
-static inline bool contains_inclusive(const SkRect& rect, const SkPoint& p) {
-    return p.fX >= rect.fLeft && p.fX <= rect.fRight && p.fY >= rect.fTop && p.fY <= rect.fBottom;
-}
-#endif
 
 static inline void add_quad_segment(const SkPoint pts[3],
-                                    SegmentArray* segments,
-                                    SkRect* devBounds) {
+                                    SegmentArray* segments) {
     if (pts[0].distanceToSqd(pts[1]) < kCloseSqd || pts[1].distanceToSqd(pts[2]) < kCloseSqd) {
         if (pts[0] != pts[2]) {
-            add_line_to_segment(pts[2], segments, devBounds);
+            add_line_to_segment(pts[2], segments);
         }
     } else {
         segments->push_back();
         segments->back().fType = Segment::kQuad;
         segments->back().fPts[0] = pts[1];
         segments->back().fPts[1] = pts[2];
-        SkASSERT(contains_inclusive(*devBounds, pts[0]));
-        devBounds->growToInclude(pts + 1, 2);
     }
 }
 
 static inline void add_cubic_segments(const SkPoint pts[4],
-                                      SkPath::Direction dir,
-                                      SegmentArray* segments,
-                                      SkRect* devBounds) {
+                                      SkPathPriv::FirstDirection dir,
+                                      SegmentArray* segments) {
     SkSTArray<15, SkPoint, true> quads;
     GrPathUtils::convertCubicToQuads(pts, SK_Scalar1, true, dir, &quads);
     int count = quads.count();
     for (int q = 0; q < count; q += 3) {
-        add_quad_segment(&quads[q], segments, devBounds);
+        add_quad_segment(&quads[q], segments);
     }
 }
 
@@ -271,8 +264,7 @@ static bool get_segments(const SkPath& path,
                          SegmentArray* segments,
                          SkPoint* fanPt,
                          int* vCount,
-                         int* iCount,
-                         SkRect* devBounds) {
+                         int* iCount) {
     SkPath::Iter iter(path, true);
     // This renderer over-emphasizes very thin path regions. We use the distance
     // to the path from the sample to compute coverage. Every pixel intersected
@@ -282,7 +274,7 @@ static bool get_segments(const SkPath& path,
     // line paths. We detect paths that are very close to a line (zero area) and
     // draw nothing.
     DegenerateTestData degenerateData;
-    SkPath::Direction dir;
+    SkPathPriv::FirstDirection dir;
     // get_direction can fail for some degenerate paths.
     if (!get_direction(path, m, &dir)) {
         return false;
@@ -295,26 +287,37 @@ static bool get_segments(const SkPath& path,
             case SkPath::kMove_Verb:
                 m.mapPoints(pts, 1);
                 update_degenerate_test(&degenerateData, pts[0]);
-                devBounds->set(pts->fX, pts->fY, pts->fX, pts->fY);
                 break;
             case SkPath::kLine_Verb: {
                 m.mapPoints(&pts[1], 1);
                 update_degenerate_test(&degenerateData, pts[1]);
-                add_line_to_segment(pts[1], segments, devBounds);
+                add_line_to_segment(pts[1], segments);
                 break;
             }
             case SkPath::kQuad_Verb:
                 m.mapPoints(pts, 3);
                 update_degenerate_test(&degenerateData, pts[1]);
                 update_degenerate_test(&degenerateData, pts[2]);
-                add_quad_segment(pts, segments, devBounds);
+                add_quad_segment(pts, segments);
                 break;
+            case SkPath::kConic_Verb: {
+                m.mapPoints(pts, 3);
+                SkScalar weight = iter.conicWeight();
+                SkAutoConicToQuads converter;
+                const SkPoint* quadPts = converter.computeQuads(pts, weight, 0.5f);
+                for (int i = 0; i < converter.countQuads(); ++i) {
+                    update_degenerate_test(&degenerateData, quadPts[2*i + 1]);
+                    update_degenerate_test(&degenerateData, quadPts[2*i + 2]);
+                    add_quad_segment(quadPts + 2*i, segments);
+                }
+                break;
+            }
             case SkPath::kCubic_Verb: {
                 m.mapPoints(pts, 4);
                 update_degenerate_test(&degenerateData, pts[1]);
                 update_degenerate_test(&degenerateData, pts[2]);
                 update_degenerate_test(&degenerateData, pts[3]);
-                add_cubic_segments(pts, dir, segments, devBounds);
+                add_cubic_segments(pts, dir, segments);
                 break;
             };
             case SkPath::kDone_Verb:
@@ -425,20 +428,28 @@ static void create_vertices(const SegmentArray&  segments,
             verts[*v + 3].fD0 = verts[*v + 3].fD1 = -SK_Scalar1;
             verts[*v + 4].fD0 = verts[*v + 4].fD1 = -SK_Scalar1;
 
-            idxs[*i + 0] = *v + 0;
-            idxs[*i + 1] = *v + 2;
-            idxs[*i + 2] = *v + 1;
+            idxs[*i + 0] = *v + 3;
+            idxs[*i + 1] = *v + 1;
+            idxs[*i + 2] = *v + 2;
 
-            idxs[*i + 3] = *v + 3;
-            idxs[*i + 4] = *v + 1;
+            idxs[*i + 3] = *v + 4;
+            idxs[*i + 4] = *v + 3;
             idxs[*i + 5] = *v + 2;
 
-            idxs[*i + 6] = *v + 4;
-            idxs[*i + 7] = *v + 3;
-            idxs[*i + 8] = *v + 2;
+            *i += 6;
+
+            // Draw the interior fan if it exists.
+            // TODO: Detect and combine colinear segments. This will ensure we catch every case
+            // with no interior, and that the resulting shared edge uses the same endpoints.
+            if (count >= 3) {
+                idxs[*i + 0] = *v + 0;
+                idxs[*i + 1] = *v + 2;
+                idxs[*i + 2] = *v + 1;
+
+                *i += 3;
+            }
 
             *v += 5;
-            *i += 9;
         } else {
             SkPoint qpts[] = {sega.endPt(), segb.fPts[0], segb.fPts[1]};
 
@@ -482,12 +493,20 @@ static void create_vertices(const SegmentArray&  segments,
             idxs[*i + 7] = *v + 3;
             idxs[*i + 8] = *v + 4;
 
-            idxs[*i +  9] = *v + 0;
-            idxs[*i + 10] = *v + 2;
-            idxs[*i + 11] = *v + 1;
+            *i += 9;
+
+            // Draw the interior fan if it exists.
+            // TODO: Detect and combine colinear segments. This will ensure we catch every case
+            // with no interior, and that the resulting shared edge uses the same endpoints.
+            if (count >= 3) {
+                idxs[*i + 0] = *v + 0;
+                idxs[*i + 1] = *v + 2;
+                idxs[*i + 2] = *v + 1;
+
+                *i += 3;
+            }
 
             *v += 6;
-            *i += 12;
         }
     }
 }
@@ -504,213 +523,502 @@ static void create_vertices(const SegmentArray&  segments,
  * Requires shader derivative instruction support.
  */
 
-class QuadEdgeEffect : public GrVertexEffect {
+class QuadEdgeEffect : public GrGeometryProcessor {
 public:
 
-    static GrEffect* Create() {
-        GR_CREATE_STATIC_EFFECT(gQuadEdgeEffect, QuadEdgeEffect, ());
-        gQuadEdgeEffect->ref();
-        return gQuadEdgeEffect;
+    static GrGeometryProcessor* Create(GrColor color, const SkMatrix& localMatrix,
+                                       bool usesLocalCoords) {
+        return SkNEW_ARGS(QuadEdgeEffect, (color, localMatrix, usesLocalCoords));
     }
 
     virtual ~QuadEdgeEffect() {}
 
-    static const char* Name() { return "QuadEdge"; }
+    const char* name() const override { return "QuadEdge"; }
 
-    virtual void getConstantColorComponents(GrColor* color,
-                                            uint32_t* validFlags) const SK_OVERRIDE {
-        *validFlags = 0;
-    }
+    const Attribute* inPosition() const { return fInPosition; }
+    const Attribute* inQuadEdge() const { return fInQuadEdge; }
+    GrColor color() const { return fColor; }
+    bool colorIgnored() const { return GrColor_ILLEGAL == fColor; }
+    const SkMatrix& localMatrix() const { return fLocalMatrix; }
+    bool usesLocalCoords() const { return fUsesLocalCoords; }
 
-    virtual const GrBackendEffectFactory& getFactory() const SK_OVERRIDE {
-        return GrTBackendEffectFactory<QuadEdgeEffect>::getInstance();
-    }
-
-    class GLEffect : public GrGLVertexEffect {
+    class GLProcessor : public GrGLGeometryProcessor {
     public:
-        GLEffect(const GrBackendEffectFactory& factory, const GrDrawEffect&)
-            : INHERITED (factory) {}
+        GLProcessor(const GrGeometryProcessor&,
+                    const GrBatchTracker&)
+            : fColor(GrColor_ILLEGAL) {}
 
-        virtual void emitCode(GrGLFullShaderBuilder* builder,
-                              const GrDrawEffect& drawEffect,
-                              const GrEffectKey& key,
-                              const char* outputColor,
-                              const char* inputColor,
-                              const TransformedCoordsArray&,
-                              const TextureSamplerArray& samplers) SK_OVERRIDE {
-            const char *vsName, *fsName;
-            const SkString* attrName =
-                builder->getEffectAttributeName(drawEffect.getVertexAttribIndices()[0]);
-            builder->fsCodeAppendf("\t\tfloat edgeAlpha;\n");
+        void onEmitCode(EmitArgs& args, GrGPArgs* gpArgs) override {
+            const QuadEdgeEffect& qe = args.fGP.cast<QuadEdgeEffect>();
+            GrGLGPBuilder* pb = args.fPB;
+            GrGLVertexBuilder* vsBuilder = pb->getVertexShaderBuilder();
 
-            SkAssertResult(builder->enableFeature(
-                                              GrGLShaderBuilder::kStandardDerivatives_GLSLFeature));
-            builder->addVarying(kVec4f_GrSLType, "QuadEdge", &vsName, &fsName);
+            // emit attributes
+            vsBuilder->emitAttributes(qe);
+
+            GrGLVertToFrag v(kVec4f_GrSLType);
+            args.fPB->addVarying("QuadEdge", &v);
+            vsBuilder->codeAppendf("%s = %s;", v.vsOut(), qe.inQuadEdge()->fName);
+
+            // Setup pass through color
+            if (!qe.colorIgnored()) {
+                this->setupUniformColor(pb, args.fOutputColor, &fColorUniform);
+            }
+
+            // Setup position
+            this->setupPosition(pb, gpArgs, qe.inPosition()->fName);
+
+            // emit transforms
+            this->emitTransforms(args.fPB, gpArgs->fPositionVar, qe.inPosition()->fName,
+                                 qe.localMatrix(), args.fTransformsIn, args.fTransformsOut);
+
+            GrGLFragmentBuilder* fsBuilder = args.fPB->getFragmentShaderBuilder();
+
+            SkAssertResult(fsBuilder->enableFeature(
+                    GrGLFragmentShaderBuilder::kStandardDerivatives_GLSLFeature));
+            fsBuilder->codeAppendf("float edgeAlpha;");
 
             // keep the derivative instructions outside the conditional
-            builder->fsCodeAppendf("\t\tvec2 duvdx = dFdx(%s.xy);\n", fsName);
-            builder->fsCodeAppendf("\t\tvec2 duvdy = dFdy(%s.xy);\n", fsName);
-            builder->fsCodeAppendf("\t\tif (%s.z > 0.0 && %s.w > 0.0) {\n", fsName, fsName);
+            fsBuilder->codeAppendf("vec2 duvdx = dFdx(%s.xy);", v.fsIn());
+            fsBuilder->codeAppendf("vec2 duvdy = dFdy(%s.xy);", v.fsIn());
+            fsBuilder->codeAppendf("if (%s.z > 0.0 && %s.w > 0.0) {", v.fsIn(), v.fsIn());
             // today we know z and w are in device space. We could use derivatives
-            builder->fsCodeAppendf("\t\t\tedgeAlpha = min(min(%s.z, %s.w) + 0.5, 1.0);\n", fsName,
-                                    fsName);
-            builder->fsCodeAppendf ("\t\t} else {\n");
-            builder->fsCodeAppendf("\t\t\tvec2 gF = vec2(2.0*%s.x*duvdx.x - duvdx.y,\n"
-                                   "\t\t\t               2.0*%s.x*duvdy.x - duvdy.y);\n",
-                                   fsName, fsName);
-            builder->fsCodeAppendf("\t\t\tedgeAlpha = (%s.x*%s.x - %s.y);\n", fsName, fsName,
-                                    fsName);
-            builder->fsCodeAppendf("\t\t\tedgeAlpha = "
-                                   "clamp(0.5 - edgeAlpha / length(gF), 0.0, 1.0);\n\t\t}\n");
+            fsBuilder->codeAppendf("edgeAlpha = min(min(%s.z, %s.w) + 0.5, 1.0);", v.fsIn(),
+                                    v.fsIn());
+            fsBuilder->codeAppendf ("} else {");
+            fsBuilder->codeAppendf("vec2 gF = vec2(2.0*%s.x*duvdx.x - duvdx.y,"
+                                   "               2.0*%s.x*duvdy.x - duvdy.y);",
+                                   v.fsIn(), v.fsIn());
+            fsBuilder->codeAppendf("edgeAlpha = (%s.x*%s.x - %s.y);", v.fsIn(), v.fsIn(),
+                                    v.fsIn());
+            fsBuilder->codeAppendf("edgeAlpha = "
+                                   "clamp(0.5 - edgeAlpha / length(gF), 0.0, 1.0);}");
 
-
-            builder->fsCodeAppendf("\t%s = %s;\n", outputColor,
-                                   (GrGLSLExpr4(inputColor) * GrGLSLExpr1("edgeAlpha")).c_str());
-
-            builder->vsCodeAppendf("\t%s = %s;\n", vsName, attrName->c_str());
+            fsBuilder->codeAppendf("%s = vec4(edgeAlpha);", args.fOutputCoverage);
         }
 
-        static inline void GenKey(const GrDrawEffect&, const GrGLCaps&, GrEffectKeyBuilder*) {}
+        static inline void GenKey(const GrGeometryProcessor& gp,
+                                  const GrBatchTracker& bt,
+                                  const GrGLSLCaps&,
+                                  GrProcessorKeyBuilder* b) {
+            const QuadEdgeEffect& qee = gp.cast<QuadEdgeEffect>();
+            uint32_t key = 0;
+            key |= qee.usesLocalCoords() && qee.localMatrix().hasPerspective() ? 0x1 : 0x0;
+            key |= qee.colorIgnored() ? 0x2 : 0x0;
+            b->add32(key);
+        }
 
-        virtual void setData(const GrGLUniformManager&, const GrDrawEffect&) SK_OVERRIDE {}
+        virtual void setData(const GrGLProgramDataManager& pdman,
+                             const GrPrimitiveProcessor& gp,
+                             const GrBatchTracker& bt) override {
+            const QuadEdgeEffect& qe = gp.cast<QuadEdgeEffect>();
+            if (qe.color() != fColor) {
+                GrGLfloat c[4];
+                GrColorToRGBAFloat(qe.color(), c);
+                pdman.set4fv(fColorUniform, 1, c);
+                fColor = qe.color();
+            }
+        }
+
+        void setTransformData(const GrPrimitiveProcessor& primProc,
+                              const GrGLProgramDataManager& pdman,
+                              int index,
+                              const SkTArray<const GrCoordTransform*, true>& transforms) override {
+            this->setTransformDataHelper<QuadEdgeEffect>(primProc, pdman, index, transforms);
+        }
 
     private:
-        typedef GrGLVertexEffect INHERITED;
+        GrColor fColor;
+        UniformHandle fColorUniform;
+
+        typedef GrGLGeometryProcessor INHERITED;
     };
 
+    virtual void getGLProcessorKey(const GrBatchTracker& bt,
+                                   const GrGLSLCaps& caps,
+                                   GrProcessorKeyBuilder* b) const override {
+        GLProcessor::GenKey(*this, bt, caps, b);
+    }
+
+    virtual GrGLPrimitiveProcessor* createGLInstance(const GrBatchTracker& bt,
+                                                     const GrGLSLCaps&) const override {
+        return SkNEW_ARGS(GLProcessor, (*this, bt));
+    }
+
 private:
-    QuadEdgeEffect() {
-        this->addVertexAttrib(kVec4f_GrSLType);
+    QuadEdgeEffect(GrColor color, const SkMatrix& localMatrix, bool usesLocalCoords)
+        : fColor(color)
+        , fLocalMatrix(localMatrix)
+        , fUsesLocalCoords(usesLocalCoords) {
+        this->initClassID<QuadEdgeEffect>();
+        fInPosition = &this->addVertexAttrib(Attribute("inPosition", kVec2f_GrVertexAttribType));
+        fInQuadEdge = &this->addVertexAttrib(Attribute("inQuadEdge", kVec4f_GrVertexAttribType));
     }
 
-    virtual bool onIsEqual(const GrEffect& other) const SK_OVERRIDE {
-        return true;
-    }
+    const Attribute* fInPosition;
+    const Attribute* fInQuadEdge;
+    GrColor          fColor;
+    SkMatrix         fLocalMatrix;
+    bool             fUsesLocalCoords;
 
-    GR_DECLARE_EFFECT_TEST;
+    GR_DECLARE_GEOMETRY_PROCESSOR_TEST;
 
-    typedef GrVertexEffect INHERITED;
+    typedef GrGeometryProcessor INHERITED;
 };
 
-GR_DEFINE_EFFECT_TEST(QuadEdgeEffect);
+GR_DEFINE_GEOMETRY_PROCESSOR_TEST(QuadEdgeEffect);
 
-GrEffect* QuadEdgeEffect::TestCreate(SkRandom* random,
-                                     GrContext*,
-                                     const GrDrawTargetCaps& caps,
-                                     GrTexture*[]) {
+GrGeometryProcessor* QuadEdgeEffect::TestCreate(GrProcessorTestData* d) {
     // Doesn't work without derivative instructions.
-    return caps.shaderDerivativeSupport() ? QuadEdgeEffect::Create() : NULL;
+    return d->fCaps->shaderCaps()->shaderDerivativeSupport() ?
+           QuadEdgeEffect::Create(GrRandomColor(d->fRandom),
+                                  GrTest::TestMatrix(d->fRandom),
+                                  d->fRandom->nextBool()) : NULL;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 
-bool GrAAConvexPathRenderer::canDrawPath(const SkPath& path,
-                                         const SkStrokeRec& stroke,
-                                         const GrDrawTarget* target,
-                                         bool antiAlias) const {
-    return (target->caps()->shaderDerivativeSupport() && antiAlias &&
-            stroke.isFillStyle() && !path.isInverseFillType() && path.isConvex());
+bool GrAAConvexPathRenderer::onCanDrawPath(const CanDrawPathArgs& args) const {
+    return (args.fTarget->caps()->shaderCaps()->shaderDerivativeSupport() && args.fAntiAlias &&
+            args.fStroke->isFillStyle() && !args.fPath->isInverseFillType() &&
+            args.fPath->isConvex());
 }
 
-namespace {
+// extract the result vertices and indices from the GrAAConvexTessellator
+static void extract_verts(const GrAAConvexTessellator& tess,
+                          void* vertices,
+                          size_t vertexStride,
+                          GrColor color,
+                          uint16_t* idxs,
+                          bool tweakAlphaForCoverage) {
+    intptr_t verts = reinterpret_cast<intptr_t>(vertices);
 
-// position + edge
-extern const GrVertexAttrib gPathAttribs[] = {
-    {kVec2f_GrVertexAttribType, 0,               kPosition_GrVertexAttribBinding},
-    {kVec4f_GrVertexAttribType, sizeof(SkPoint), kEffect_GrVertexAttribBinding}
-};
+    for (int i = 0; i < tess.numPts(); ++i) {
+        *((SkPoint*)((intptr_t)verts + i * vertexStride)) = tess.point(i);
+    }
 
-};
+    // Make 'verts' point to the colors
+    verts += sizeof(SkPoint);
+    for (int i = 0; i < tess.numPts(); ++i) {
+        if (tweakAlphaForCoverage) {
+            SkASSERT(SkScalarRoundToInt(255.0f * tess.coverage(i)) <= 255);
+            unsigned scale = SkScalarRoundToInt(255.0f * tess.coverage(i));
+            GrColor scaledColor = (0xff == scale) ? color : SkAlphaMulQ(color, scale);
+            *reinterpret_cast<GrColor*>(verts + i * vertexStride) = scaledColor;
+        } else {
+            *reinterpret_cast<GrColor*>(verts + i * vertexStride) = color;
+            *reinterpret_cast<float*>(verts + i * vertexStride + sizeof(GrColor)) = 
+                    tess.coverage(i);
+        }
+    }
 
-bool GrAAConvexPathRenderer::onDrawPath(const SkPath& origPath,
-                                        const SkStrokeRec&,
-                                        GrDrawTarget* target,
-                                        bool antiAlias) {
+    for (int i = 0; i < tess.numIndices(); ++i) {
+        idxs[i] = tess.index(i);
+    }
+}
 
-    const SkPath* path = &origPath;
-    if (path->isEmpty()) {
+static const GrGeometryProcessor* create_fill_gp(bool tweakAlphaForCoverage,
+                                                 const SkMatrix& viewMatrix,
+                                                 bool usesLocalCoords,
+                                                 bool coverageIgnored) {
+    using namespace GrDefaultGeoProcFactory;
+
+    Color color(Color::kAttribute_Type);
+    Coverage::Type coverageType;
+    // TODO remove coverage if coverage is ignored
+    /*if (coverageIgnored) {
+        coverageType = Coverage::kNone_Type;
+    } else*/ if (tweakAlphaForCoverage) {
+        coverageType = Coverage::kSolid_Type;
+    } else {
+        coverageType = Coverage::kAttribute_Type;
+    }
+    Coverage coverage(coverageType);
+    LocalCoords localCoords(usesLocalCoords ? LocalCoords::kUsePosition_Type :
+                                              LocalCoords::kUnused_Type);
+    return CreateForDeviceSpace(color, coverage, localCoords, viewMatrix);
+}
+
+class AAConvexPathBatch : public GrBatch {
+public:
+    struct Geometry {
+        GrColor fColor;
+        SkMatrix fViewMatrix;
+        SkPath fPath;
+    };
+
+    static GrBatch* Create(const Geometry& geometry) {
+        return SkNEW_ARGS(AAConvexPathBatch, (geometry));
+    }
+
+    const char* name() const override { return "AAConvexBatch"; }
+
+    void getInvariantOutputColor(GrInitInvariantOutput* out) const override {
+        // When this is called on a batch, there is only one geometry bundle
+        out->setKnownFourComponents(fGeoData[0].fColor);
+    }
+    void getInvariantOutputCoverage(GrInitInvariantOutput* out) const override {
+        out->setUnknownSingleComponent();
+    }
+
+    void initBatchTracker(const GrPipelineInfo& init) override {
+        // Handle any color overrides
+        if (!init.readsColor()) {
+            fGeoData[0].fColor = GrColor_ILLEGAL;
+        }
+        init.getOverrideColorIfSet(&fGeoData[0].fColor);
+
+        // setup batch properties
+        fBatch.fColorIgnored = !init.readsColor();
+        fBatch.fColor = fGeoData[0].fColor;
+        fBatch.fUsesLocalCoords = init.readsLocalCoords();
+        fBatch.fCoverageIgnored = !init.readsCoverage();
+        fBatch.fLinesOnly = SkPath::kLine_SegmentMask == fGeoData[0].fPath.getSegmentMasks();
+        fBatch.fCanTweakAlphaForCoverage = init.canTweakAlphaForCoverage();
+    }
+
+    void generateGeometryLinesOnly(GrBatchTarget* batchTarget) {
+        bool canTweakAlphaForCoverage = this->canTweakAlphaForCoverage();
+
+        // Setup GrGeometryProcessor
+        SkAutoTUnref<const GrGeometryProcessor> gp(create_fill_gp(canTweakAlphaForCoverage,
+                                                                  this->viewMatrix(),
+                                                                  this->usesLocalCoords(),
+                                                                  this->coverageIgnored()));
+        if (!gp) {
+            SkDebugf("Could not create GrGeometryProcessor\n");
+            return;
+        }
+
+        batchTarget->initDraw(gp, this->pipeline());
+
+        size_t vertexStride = gp->getVertexStride();
+
+        SkASSERT(canTweakAlphaForCoverage ?
+                 vertexStride == sizeof(GrDefaultGeoProcFactory::PositionColorAttr) :
+                 vertexStride == sizeof(GrDefaultGeoProcFactory::PositionColorCoverageAttr));
+
+        GrAAConvexTessellator tess;
+
+        int instanceCount = fGeoData.count();
+
+        for (int i = 0; i < instanceCount; i++) {
+            tess.rewind();
+
+            Geometry& args = fGeoData[i];
+
+            if (!tess.tessellate(args.fViewMatrix, args.fPath)) {
+                continue;
+            }
+
+            const GrVertexBuffer* vertexBuffer;
+            int firstVertex;
+
+            void* verts = batchTarget->makeVertSpace(vertexStride, tess.numPts(),
+                                                     &vertexBuffer, &firstVertex);
+            if (!verts) {
+                SkDebugf("Could not allocate vertices\n");
+                return;
+            }
+
+            const GrIndexBuffer* indexBuffer;
+            int firstIndex;
+
+            uint16_t* idxs = batchTarget->makeIndexSpace(tess.numIndices(),
+                                                        &indexBuffer, &firstIndex);
+            if (!idxs) {
+                SkDebugf("Could not allocate indices\n");
+                return;
+            }
+
+            extract_verts(tess, verts, vertexStride, args.fColor, idxs, canTweakAlphaForCoverage);
+
+            GrVertices info;
+            info.initIndexed(kTriangles_GrPrimitiveType,
+                             vertexBuffer, indexBuffer,
+                             firstVertex, firstIndex,
+                             tess.numPts(), tess.numIndices());
+            batchTarget->draw(info);
+        }
+    }
+
+    void generateGeometry(GrBatchTarget* batchTarget) override {
+#ifndef SK_IGNORE_LINEONLY_AA_CONVEX_PATH_OPTS
+        if (this->linesOnly()) {
+            this->generateGeometryLinesOnly(batchTarget);
+            return;
+        }
+#endif
+
+        int instanceCount = fGeoData.count();
+
+        SkMatrix invert;
+        if (this->usesLocalCoords() && !this->viewMatrix().invert(&invert)) {
+            SkDebugf("Could not invert viewmatrix\n");
+            return;
+        }
+
+        // Setup GrGeometryProcessor
+        SkAutoTUnref<GrGeometryProcessor> quadProcessor(
+                QuadEdgeEffect::Create(this->color(), invert, this->usesLocalCoords()));
+
+        batchTarget->initDraw(quadProcessor, this->pipeline());
+
+        // TODO generate all segments for all paths and use one vertex buffer
+        for (int i = 0; i < instanceCount; i++) {
+            Geometry& args = fGeoData[i];
+
+            // We use the fact that SkPath::transform path does subdivision based on
+            // perspective. Otherwise, we apply the view matrix when copying to the
+            // segment representation.
+            const SkMatrix* viewMatrix = &args.fViewMatrix;
+            if (viewMatrix->hasPerspective()) {
+                args.fPath.transform(*viewMatrix);
+                viewMatrix = &SkMatrix::I();
+            }
+
+            int vertexCount;
+            int indexCount;
+            enum {
+                kPreallocSegmentCnt = 512 / sizeof(Segment),
+                kPreallocDrawCnt = 4,
+            };
+            SkSTArray<kPreallocSegmentCnt, Segment, true> segments;
+            SkPoint fanPt;
+
+            if (!get_segments(args.fPath, *viewMatrix, &segments, &fanPt, &vertexCount,
+                              &indexCount)) {
+                continue;
+            }
+
+            const GrVertexBuffer* vertexBuffer;
+            int firstVertex;
+
+            size_t vertexStride = quadProcessor->getVertexStride();
+            QuadVertex* verts = reinterpret_cast<QuadVertex*>(batchTarget->makeVertSpace(
+                vertexStride, vertexCount, &vertexBuffer, &firstVertex));
+
+            if (!verts) {
+                SkDebugf("Could not allocate vertices\n");
+                return;
+            }
+
+            const GrIndexBuffer* indexBuffer;
+            int firstIndex;
+
+            uint16_t *idxs = batchTarget->makeIndexSpace(indexCount, &indexBuffer, &firstIndex);
+            if (!idxs) {
+                SkDebugf("Could not allocate indices\n");
+                return;
+            }
+
+            SkSTArray<kPreallocDrawCnt, Draw, true> draws;
+            create_vertices(segments, fanPt, &draws, verts, idxs);
+
+            GrVertices vertices;
+
+            for (int i = 0; i < draws.count(); ++i) {
+                const Draw& draw = draws[i];
+                vertices.initIndexed(kTriangles_GrPrimitiveType, vertexBuffer, indexBuffer,
+                                     firstVertex, firstIndex, draw.fVertexCnt, draw.fIndexCnt);
+                batchTarget->draw(vertices);
+                firstVertex += draw.fVertexCnt;
+                firstIndex += draw.fIndexCnt;
+            }
+        }
+    }
+
+    SkSTArray<1, Geometry, true>* geoData() { return &fGeoData; }
+
+private:
+    AAConvexPathBatch(const Geometry& geometry) {
+        this->initClassID<AAConvexPathBatch>();
+        fGeoData.push_back(geometry);
+
+        // compute bounds
+        fBounds = geometry.fPath.getBounds();
+        geometry.fViewMatrix.mapRect(&fBounds);
+    }
+
+    bool onCombineIfPossible(GrBatch* t) override {
+        if (!this->pipeline()->isEqual(*t->pipeline())) {
+            return false;
+        }
+
+        AAConvexPathBatch* that = t->cast<AAConvexPathBatch>();
+
+        if (this->color() != that->color()) {
+            return false;
+        }
+
+        SkASSERT(this->usesLocalCoords() == that->usesLocalCoords());
+        if (this->usesLocalCoords() && !this->viewMatrix().cheapEqualTo(that->viewMatrix())) {
+            return false;
+        }
+
+        if (this->linesOnly() != that->linesOnly()) {
+            return false;
+        }
+
+        // In the event of two batches, one who can tweak, one who cannot, we just fall back to
+        // not tweaking
+        if (this->canTweakAlphaForCoverage() != that->canTweakAlphaForCoverage()) {
+            fBatch.fCanTweakAlphaForCoverage = false;
+        }
+
+        fGeoData.push_back_n(that->geoData()->count(), that->geoData()->begin());
+        this->joinBounds(that->bounds());
         return true;
     }
 
-    SkMatrix viewMatrix = target->getDrawState().getViewMatrix();
-    GrDrawTarget::AutoStateRestore asr;
-    if (!asr.setIdentity(target, GrDrawTarget::kPreserve_ASRInit)) {
-        return false;
-    }
-    GrDrawState* drawState = target->drawState();
+    GrColor color() const { return fBatch.fColor; }
+    bool linesOnly() const { return fBatch.fLinesOnly; }
+    bool usesLocalCoords() const { return fBatch.fUsesLocalCoords; }
+    bool canTweakAlphaForCoverage() const { return fBatch.fCanTweakAlphaForCoverage; }
+    const SkMatrix& viewMatrix() const { return fGeoData[0].fViewMatrix; }
+    bool coverageIgnored() const { return fBatch.fCoverageIgnored; }
 
-    // We use the fact that SkPath::transform path does subdivision based on
-    // perspective. Otherwise, we apply the view matrix when copying to the
-    // segment representation.
-    SkPath tmpPath;
-    if (viewMatrix.hasPerspective()) {
-        origPath.transform(viewMatrix, &tmpPath);
-        path = &tmpPath;
-        viewMatrix = SkMatrix::I();
-    }
-
-    QuadVertex *verts;
-    uint16_t* idxs;
-
-    int vCount;
-    int iCount;
-    enum {
-        kPreallocSegmentCnt = 512 / sizeof(Segment),
-        kPreallocDrawCnt = 4,
+    struct BatchTracker {
+        GrColor fColor;
+        bool fUsesLocalCoords;
+        bool fColorIgnored;
+        bool fCoverageIgnored;
+        bool fLinesOnly;
+        bool fCanTweakAlphaForCoverage;
     };
-    SkSTArray<kPreallocSegmentCnt, Segment, true> segments;
-    SkPoint fanPt;
 
-    // We can't simply use the path bounds because we may degenerate cubics to quads which produces
-    // new control points outside the original convex hull.
-    SkRect devBounds;
-    if (!get_segments(*path, viewMatrix, &segments, &fanPt, &vCount, &iCount, &devBounds)) {
-        return false;
+    BatchTracker fBatch;
+    SkSTArray<1, Geometry, true> fGeoData;
+};
+
+bool GrAAConvexPathRenderer::onDrawPath(const DrawPathArgs& args) {
+    if (args.fPath->isEmpty()) {
+        return true;
     }
 
-    // Our computed verts should all be within one pixel of the segment control points.
-    devBounds.outset(SK_Scalar1, SK_Scalar1);
+    AAConvexPathBatch::Geometry geometry;
+    geometry.fColor = args.fColor;
+    geometry.fViewMatrix = *args.fViewMatrix;
+    geometry.fPath = *args.fPath;
 
-    drawState->setVertexAttribs<gPathAttribs>(SK_ARRAY_COUNT(gPathAttribs));
-
-    static const int kEdgeAttrIndex = 1;
-    GrEffect* quadEffect = QuadEdgeEffect::Create();
-    drawState->addCoverageEffect(quadEffect, kEdgeAttrIndex)->unref();
-
-    GrDrawTarget::AutoReleaseGeometry arg(target, vCount, iCount);
-    if (!arg.succeeded()) {
-        return false;
-    }
-    SkASSERT(sizeof(QuadVertex) == drawState->getVertexSize());
-    verts = reinterpret_cast<QuadVertex*>(arg.vertices());
-    idxs = reinterpret_cast<uint16_t*>(arg.indices());
-
-    SkSTArray<kPreallocDrawCnt, Draw, true> draws;
-    create_vertices(segments, fanPt, &draws, verts, idxs);
-
-    // Check devBounds
-#ifdef SK_DEBUG
-    SkRect tolDevBounds = devBounds;
-    tolDevBounds.outset(SK_Scalar1 / 10000, SK_Scalar1 / 10000);
-    SkRect actualBounds;
-    actualBounds.set(verts[0].fPos, verts[1].fPos);
-    for (int i = 2; i < vCount; ++i) {
-        actualBounds.growToInclude(verts[i].fPos.fX, verts[i].fPos.fY);
-    }
-    SkASSERT(tolDevBounds.contains(actualBounds));
-#endif
-
-    int vOffset = 0;
-    for (int i = 0; i < draws.count(); ++i) {
-        const Draw& draw = draws[i];
-        target->drawIndexed(kTriangles_GrPrimitiveType,
-                            vOffset,  // start vertex
-                            0,        // start index
-                            draw.fVertexCnt,
-                            draw.fIndexCnt,
-                            &devBounds);
-        vOffset += draw.fVertexCnt;
-    }
+    SkAutoTUnref<GrBatch> batch(AAConvexPathBatch::Create(geometry));
+    args.fTarget->drawBatch(*args.fPipelineBuilder, batch);
 
     return true;
+
 }
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+#ifdef GR_TEST_UTILS
+
+BATCH_TEST_DEFINE(AAConvexPathBatch) {
+    AAConvexPathBatch::Geometry geometry;
+    geometry.fColor = GrRandomColor(random);
+    geometry.fViewMatrix = GrTest::TestMatrixInvertible(random);
+    geometry.fPath = GrTest::TestPathConvex(random);
+
+    return AAConvexPathBatch::Create(geometry);
+}
+
+#endif

@@ -1,3 +1,7 @@
+# Copyright 2015 Google Inc.
+#
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
 # GYP file to build pathops unit tests.
 {
   'includes': [
@@ -16,9 +20,11 @@
       ],
       'sources': [
         '../tests/PathOpsAngleIdeas.cpp',
+        '../tests/PathOpsBattles.cpp',
         '../tests/PathOpsCubicLineIntersectionIdeas.cpp',
         '../tests/PathOpsDebug.cpp',
         '../tests/PathOpsOpLoopThreadedTest.cpp',
+        '../tests/PathOpsTSectDebug.h',
         '../tests/skia_test.cpp',
       ],
       'conditions': [

@@ -19,16 +19,11 @@ public:
     ShellWindow(void* hwnd, int argc, char** argv);
     virtual ~ShellWindow();
 
-    virtual SkCanvas* createCanvas() SK_OVERRIDE {
-        SkCanvas* canvas = this->INHERITED::createCanvas();
-        return canvas;
-    }
-
 protected:
-    virtual void onSizeChange() SK_OVERRIDE;
+    void onSizeChange() override;
 
     virtual bool onDispatchClick(int x, int y, Click::State, void* owner,
-                                 unsigned modi) SK_OVERRIDE;
+                                 unsigned modi) override;
 
 private:
     typedef SkOSWindow INHERITED;

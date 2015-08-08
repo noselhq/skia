@@ -8,12 +8,15 @@
 #ifndef SkImageGenerator_DEFINED
 #define SkImageGenerator_DEFINED
 
-#include "SkImageInfo.h"
 #include "SkColor.h"
+#include "SkImageInfo.h"
 
 class SkBitmap;
 class SkData;
 class SkImageGenerator;
+class SkMatrix;
+class SkPaint;
+class SkPicture;
 
 /**
  *  Takes ownership of SkImageGenerator.  If this method fails for
@@ -36,17 +39,16 @@ class SkImageGenerator;
 SK_API bool SkInstallDiscardablePixelRef(SkImageGenerator*, SkBitmap* destination);
 
 /**
- *  Purges all unlocked discardable memory in Skia's global
- *  discardable memory pool.
+ *  On success, installs a discardable pixelref into destination, based on encoded data.
+ *  Regardless of success or failure, the caller must still balance their ownership of encoded.
  */
-SK_API void SkPurgeGlobalDiscardableMemoryPool();
-
+SK_API bool SkInstallDiscardablePixelRef(SkData* encoded, SkBitmap* destination);
 
 /**
  *  An interface that allows a purgeable PixelRef (such as a
  *  SkDiscardablePixelRef) to decode and re-decode an image as needed.
  */
-class SK_API SkImageGenerator {
+class SK_API SkImageGenerator : public SkNoncopyable {
 public:
     /**
      *  The PixelRef which takes ownership of this SkImageGenerator
@@ -54,13 +56,6 @@ public:
      */
     virtual ~SkImageGenerator() { }
 
-#ifdef SK_SUPPORT_LEGACY_IMAGEGENERATORAPI
-    virtual SkData* refEncodedData() { return this->onRefEncodedData(); }
-    virtual bool getInfo(SkImageInfo* info) { return this->onGetInfo(info); }
-    virtual bool getPixels(const SkImageInfo& info, void* pixels, size_t rowBytes) {
-        return this->onGetPixels(info, pixels, rowBytes, NULL, NULL);
-    }
-#else
     /**
      *  Return a ref to the encoded (i.e. compressed) representation,
      *  of this data.
@@ -71,15 +66,9 @@ public:
     SkData* refEncodedData() { return this->onRefEncodedData(); }
 
     /**
-     *  Return some information about the image, allowing the owner of
-     *  this object to allocate pixels.
-     *
-     *  Repeated calls to this function should give the same results,
-     *  allowing the PixelRef to be immutable.
-     *
-     *  @return false if anything goes wrong.
+     *  Return the ImageInfo associated with this generator.
      */
-    bool getInfo(SkImageInfo* info);
+    const SkImageInfo& getInfo() const { return fInfo; }
 
     /**
      *  Decode into the given pixels, a block of memory of size at
@@ -97,6 +86,10 @@ public:
      *         different output-configs, which the implementation can
      *         decide to support or not.
      *
+     *         A size that does not match getInfo() implies a request
+     *         to scale. If the generator cannot perform this scale,
+     *         it will return kInvalidScale.
+     *
      *  If info is kIndex8_SkColorType, then the caller must provide storage for up to 256
      *  SkPMColor values in ctable. On success the generator must copy N colors into that storage,
      *  (where N is the logical number of table entries) and set ctableCount to N.
@@ -104,17 +97,16 @@ public:
      *  If info is not kIndex8_SkColorType, then the last two parameters may be NULL. If ctableCount
      *  is not null, it will be set to 0.
      *
-     *  @return false if anything goes wrong or if the image info is
-     *          unsupported.
+     *  @return true on success.
      */
     bool getPixels(const SkImageInfo& info, void* pixels, size_t rowBytes,
                    SkPMColor ctable[], int* ctableCount);
 
     /**
-     *  Simplified version of getPixels() that asserts that info is NOT kIndex8_SkColorType.
+     *  Simplified version of getPixels() that asserts that info is NOT kIndex8_SkColorType and
+     *  uses the default Options.
      */
     bool getPixels(const SkImageInfo& info, void* pixels, size_t rowBytes);
-#endif
 
     /**
      *  If planes or rowBytes is NULL or if any entry in planes is NULL or if any entry in rowBytes
@@ -127,15 +119,42 @@ public:
      *  associated YUV data into those planes of memory supplied by the caller. It should validate
      *  that the sizes match what it expected. If the sizes do not match, it should return false.
      */
-    bool getYUV8Planes(SkISize sizes[3], void* planes[3], size_t rowBytes[3]);
+    bool getYUV8Planes(SkISize sizes[3], void* planes[3], size_t rowBytes[3],
+                       SkYUVColorSpace* colorSpace);
+
+    /**
+     *  If the default image decoder system can interpret the specified (encoded) data, then
+     *  this returns a new ImageGenerator for it. Otherwise this returns NULL. Either way
+     *  the caller is still responsible for managing their ownership of the data.
+     */
+    static SkImageGenerator* NewFromEncoded(SkData*);
+
+    /** Return a new image generator backed by the specified picture.  If the size is empty or
+     *  the picture is NULL, this returns NULL.
+     *  The optional matrix and paint arguments are passed to drawPicture() at rasterization
+     *  time.
+     */
+    static SkImageGenerator* NewFromPicture(const SkISize&, const SkPicture*, const SkMatrix*,
+                                            const SkPaint*);
 
 protected:
+    SkImageGenerator(const SkImageInfo& info) : fInfo(info) {}
+
     virtual SkData* onRefEncodedData();
-    virtual bool onGetInfo(SkImageInfo* info);
-    virtual bool onGetPixels(const SkImageInfo& info,
-                             void* pixels, size_t rowBytes,
+
+    virtual bool onGetPixels(const SkImageInfo& info, void* pixels, size_t rowBytes,
                              SkPMColor ctable[], int* ctableCount);
     virtual bool onGetYUV8Planes(SkISize sizes[3], void* planes[3], size_t rowBytes[3]);
+    virtual bool onGetYUV8Planes(SkISize sizes[3], void* planes[3], size_t rowBytes[3],
+                                 SkYUVColorSpace* colorSpace);
+
+private:
+    const SkImageInfo fInfo;
+
+    // This is our default impl, which may be different on different platforms.
+    // It is called from NewFromEncoded() after it has checked for any runtime factory.
+    // The SkData will never be NULL, as that will have been checked by NewFromEncoded.
+    static SkImageGenerator* NewFromEncodedImpl(SkData*);
 };
 
 #endif  // SkImageGenerator_DEFINED

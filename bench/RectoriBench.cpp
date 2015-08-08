@@ -10,6 +10,7 @@
 #include "SkCanvas.h"
 #include "SkLayerDrawLooper.h"
 #include "SkPaint.h"
+#include "SkPath.h"
 #include "SkRandom.h"
 
 // This bench replicates a problematic use case of a draw looper used
@@ -20,11 +21,11 @@ public:
 
 protected:
 
-    virtual const char* onGetName() {
+    const char* onGetName() override {
         return "rectori";
     }
 
-    virtual void onDraw(const int loops, SkCanvas* canvas) SK_OVERRIDE {
+    void onDraw(const int loops, SkCanvas* canvas) override {
         SkRandom Random;
 
         for (int i = 0; i < loops; i++) {

@@ -8,53 +8,90 @@
 #ifndef GrPathRange_DEFINED
 #define GrPathRange_DEFINED
 
-#include "GrGpuObject.h"
-#include "GrResourceCache.h"
-#include "SkStrokeRec.h"
+#include "GrGpuResource.h"
+#include "SkRefCnt.h"
+#include "SkTArray.h"
 
 class SkPath;
+class SkDescriptor;
 
 /**
- * Represents a contiguous range of GPU path objects with a common stroke. The
- * path range is immutable with the exception that individual paths can be
- * initialized lazily. Unititialized paths are silently ignored by drawing
- * functions.
+ * Represents a contiguous range of GPU path objects.
+ * This object is immutable with the exception that individual paths may be
+ * initialized lazily.
  */
-class GrPathRange : public GrGpuObject {
+
+class GrPathRange : public GrGpuResource {
 public:
-    SK_DECLARE_INST_COUNT(GrPathRange);
+    
 
-    static const bool kIsWrapped = false;
+    enum PathIndexType {
+        kU8_PathIndexType,   //!< uint8_t
+        kU16_PathIndexType,  //!< uint16_t
+        kU32_PathIndexType,  //!< uint32_t
 
-    static GrResourceKey::ResourceType resourceType() {
-        static const GrResourceKey::ResourceType type = GrResourceKey::GenerateResourceType();
-        return type;
+        kLast_PathIndexType = kU32_PathIndexType
+    };
+
+    static inline int PathIndexSizeInBytes(PathIndexType type) {
+        GR_STATIC_ASSERT(0 == kU8_PathIndexType);
+        GR_STATIC_ASSERT(1 == kU16_PathIndexType);
+        GR_STATIC_ASSERT(2 == kU32_PathIndexType);
+        GR_STATIC_ASSERT(kU32_PathIndexType == kLast_PathIndexType);
+
+        return 1 << type;
     }
 
     /**
-     * Initialize to a range with a fixed size and stroke. Stroke must not be hairline.
+     * Class that generates the paths for a specific range.
      */
-    GrPathRange(GrGpu* gpu, size_t size, const SkStrokeRec& stroke)
-        : INHERITED(gpu, kIsWrapped),
-          fSize(size),
-          fStroke(stroke) {
-    }
-
-    size_t getSize() const { return fSize; }
-    const SkStrokeRec& getStroke() const { return fStroke; }
+    class PathGenerator : public SkRefCnt {
+    public:
+        virtual int getNumPaths() = 0;
+        virtual void generatePath(int index, SkPath* out) = 0;
+#ifdef SK_DEBUG
+        virtual bool isEqualTo(const SkDescriptor&) const { return false; }
+#endif
+        virtual ~PathGenerator() {}
+    };
 
     /**
-     * Initialize a path in the range. It is invalid to call this method for a
-     * path that has already been initialized.
+     * Initialize a lazy-loaded path range. This class will generate an SkPath and call
+     * onInitPath() for each path within the range before it is drawn for the first time.
      */
-    virtual void initAt(size_t index, const SkPath&) = 0;
+    GrPathRange(GrGpu*, PathGenerator*);
 
+    /**
+     * Initialize an eager-loaded path range. The subclass is responsible for ensuring all
+     * the paths are initialized up front.
+     */
+    GrPathRange(GrGpu*, int numPaths);
+
+    int getNumPaths() const { return fNumPaths; }
+    const PathGenerator* getPathGenerator() const { return fPathGenerator.get(); }
+
+#ifdef SK_DEBUG
+    virtual bool isEqualTo(const SkDescriptor& desc) const {
+        return NULL != fPathGenerator.get() && fPathGenerator->isEqualTo(desc);
+    }
+#endif
 protected:
-    size_t fSize;
-    SkStrokeRec fStroke;
+    // Initialize a path in the range before drawing. This is only called when
+    // fPathGenerator is non-null. The child class need not call didChangeGpuMemorySize(),
+    // GrPathRange will take care of that after the call is complete.
+    virtual void onInitPath(int index, const SkPath&) const = 0;
 
 private:
-    typedef GrGpuObject INHERITED;
+    // Notify when paths will be drawn in case this is a lazy-loaded path range.
+    friend class GrPathRendering;
+    void willDrawPaths(const void* indices, PathIndexType, int count) const;
+    template<typename IndexType> void willDrawPaths(const void* indices, int count) const;
+
+    mutable SkAutoTUnref<PathGenerator> fPathGenerator;
+    mutable SkTArray<uint8_t, true /*MEM_COPY*/> fGeneratedPaths;
+    const int fNumPaths;
+
+    typedef GrGpuResource INHERITED;
 };
 
 #endif

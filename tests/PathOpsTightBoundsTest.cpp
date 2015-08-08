@@ -8,7 +8,6 @@
 #include "PathOpsThreadedCommon.h"
 #include "SkCanvas.h"
 #include "SkRandom.h"
-#include "SkTArray.h"
 #include "SkTSort.h"
 #include "Test.h"
 
@@ -35,8 +34,8 @@ static void testTightBoundsLines(PathOpsThreadState* data) {
 }
 
 DEF_TEST(PathOpsTightBoundsLines, reporter) {
-    int threadCount = initializeTests(reporter, "tightBoundsLines");
-    PathOpsThreadedTestRunner testRunner(reporter, threadCount);
+    initializeTests(reporter, "tightBoundsLines");
+    PathOpsThreadedTestRunner testRunner(reporter);
     int outerCount = reporter->allowExtendedTest() ? 100 : 1;
     for (int index = 0; index < outerCount; ++index) {
         for (int idx2 = 0; idx2 < 10; ++idx2) {
@@ -110,8 +109,8 @@ static void testTightBoundsQuads(PathOpsThreadState* data) {
 }
 
 DEF_TEST(PathOpsTightBoundsQuads, reporter) {
-    int threadCount = initializeTests(reporter, "tightBoundsQuads");
-    PathOpsThreadedTestRunner testRunner(reporter, threadCount);
+    initializeTests(reporter, "tightBoundsQuads");
+    PathOpsThreadedTestRunner testRunner(reporter);
     int outerCount = reporter->allowExtendedTest() ? 100 : 1;
     for (int index = 0; index < outerCount; ++index) {
         for (int idx2 = 0; idx2 < 10; ++idx2) {

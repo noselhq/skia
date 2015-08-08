@@ -27,25 +27,26 @@ public:
     Xfermodes3GM() {}
 
 protected:
-    virtual SkString onShortName() SK_OVERRIDE {
+    SkString onShortName() override {
         return SkString("xfermodes3");
     }
 
-    virtual SkISize onISize() SK_OVERRIDE {
+    SkISize onISize() override {
         return SkISize::Make(630, 1215);
     }
 
-    virtual void onDrawBackground(SkCanvas* canvas) SK_OVERRIDE {
+    void onDrawBackground(SkCanvas* canvas) override {
         SkPaint bgPaint;
-        bgPaint.setColor(0xFF70D0E0);
+        bgPaint.setColor(sk_tool_utils::color_to_565(0xFF70D0E0));
         canvas->drawPaint(bgPaint);
     }
 
-    virtual void onDraw(SkCanvas* canvas) SK_OVERRIDE {
+    void onDraw(SkCanvas* canvas) override {
         canvas->translate(SkIntToScalar(10), SkIntToScalar(20));
 
         SkPaint labelP;
         labelP.setAntiAlias(true);
+        sk_tool_utils::set_portable_typeface(&labelP);
 
         static const SkColor kSolidColors[] = {
             SK_ColorTRANSPARENT,
@@ -124,17 +125,13 @@ private:
         SkCanvas* tempCanvas = NULL;
 #if SK_SUPPORT_GPU
         GrContext* context = baseCanvas->getGrContext();
-        if (NULL != context) {
-            GrTextureDesc desc;
-            desc.fWidth = w;
-            desc.fHeight = h;
-            desc.fConfig = SkImageInfo2GrPixelConfig(baseCanvas->imageInfo());
-            desc.fFlags = kRenderTarget_GrTextureFlagBit;
-            SkAutoTUnref<GrSurface> surface(context->createUncachedTexture(desc, NULL, 0));
-            SkAutoTUnref<SkBaseDevice> device(SkGpuDevice::Create(surface.get()));
-            if (NULL != device.get()) {
-                tempCanvas = SkNEW_ARGS(SkCanvas, (device.get()));
-            }
+        SkImageInfo baseInfo = baseCanvas->imageInfo();
+        SkImageInfo info = SkImageInfo::Make(w, h, baseInfo.colorType(), baseInfo.alphaType(),
+                                             baseInfo.profileType());
+        SkAutoTUnref<SkSurface> surface(SkSurface::NewRenderTarget(context, SkSurface::kNo_Budgeted,
+                                        info, 0, NULL));
+        if (surface) {
+            tempCanvas = SkRef(surface->getCanvas());
         }
 #endif
         return tempCanvas;
@@ -182,12 +179,12 @@ private:
         canvas->restore();
     }
 
-    virtual void onOnceBeforeDraw() SK_OVERRIDE {
+    void onOnceBeforeDraw() override {
         static const uint32_t kCheckData[] = {
-            SkPackARGB32(0xFF, 0x40, 0x40, 0x40),
-            SkPackARGB32(0xFF, 0xD0, 0xD0, 0xD0),
-            SkPackARGB32(0xFF, 0xD0, 0xD0, 0xD0),
-            SkPackARGB32(0xFF, 0x40, 0x40, 0x40)
+            SkPackARGB32(0xFF, 0x42, 0x41, 0x42),
+            SkPackARGB32(0xFF, 0xD6, 0xD3, 0xD6),
+            SkPackARGB32(0xFF, 0xD6, 0xD3, 0xD6),
+            SkPackARGB32(0xFF, 0x42, 0x41, 0x42)
         };
         SkBitmap bg;
         bg.allocN32Pixels(2, 2, true);

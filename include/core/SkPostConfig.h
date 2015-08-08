@@ -5,10 +5,12 @@
  * found in the LICENSE file.
  */
 
+// IWYU pragma: private, include "SkTypes.h"
+
 #ifndef SkPostConfig_DEFINED
 #define SkPostConfig_DEFINED
 
-#if defined(SK_BUILD_FOR_WIN32) || defined(SK_BUILD_FOR_WINCE)
+#if defined(SK_BUILD_FOR_WIN32)
 #  define SK_BUILD_FOR_WIN
 #endif
 
@@ -24,13 +26,12 @@
 
 /**
  * Matrix calculations may be float or double.
- * The default is double, as that is faster given our impl uses doubles
- * for intermediate calculations.
+ * The default is float, as that's what Chromium's using.
  */
 #if defined(SK_MSCALAR_IS_DOUBLE) && defined(SK_MSCALAR_IS_FLOAT)
 #  error "cannot define both SK_MSCALAR_IS_DOUBLE and SK_MSCALAR_IS_FLOAT"
 #elif !defined(SK_MSCALAR_IS_DOUBLE) && !defined(SK_MSCALAR_IS_FLOAT)
-#  define SK_MSCALAR_IS_DOUBLE
+#  define SK_MSCALAR_IS_FLOAT
 #endif
 
 #if defined(SK_CPU_LENDIAN) && defined(SK_CPU_BENDIAN)
@@ -68,6 +69,15 @@
 #  endif
 #endif
 
+// As usual, there are two ways to increase alignment... the MSVC way and the everyone-else way.
+#ifndef SK_STRUCT_ALIGN
+    #ifdef _MSC_VER
+        #define SK_STRUCT_ALIGN(N) __declspec(align(N))
+    #else
+        #define SK_STRUCT_ALIGN(N) __attribute__((aligned(N)))
+    #endif
+#endif
+
 #if !defined(SK_SUPPORT_GPU)
 #  define SK_SUPPORT_GPU 1
 #endif
@@ -86,12 +96,6 @@
 #  else
 #    define SkNO_RETURN_HINT() do {} while (false)
 #  endif
-#endif
-
-#if defined(SK_ZLIB_INCLUDE) && defined(SK_SYSTEM_ZLIB)
-#  error "cannot define both SK_ZLIB_INCLUDE and SK_SYSTEM_ZLIB"
-#elif defined(SK_ZLIB_INCLUDE) || defined(SK_SYSTEM_ZLIB)
-#  define SK_HAS_ZLIB
 #endif
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -115,23 +119,6 @@
 #    else
 #      define SK_CRASH() do { SkNO_RETURN_HINT(); } while (true)
 #    endif
-#  endif
-#endif
-
-///////////////////////////////////////////////////////////////////////////////
-
-/**
- * SK_ENABLE_INST_COUNT controlls printing how many reference counted objects
- * are still held on exit.
- * Defaults to 1 in DEBUG and 0 in RELEASE.
- */
-#ifndef SK_ENABLE_INST_COUNT
-#  ifdef SK_DEBUG
-// Only enabled for static builds, because instance counting relies on static
-// variables in functions defined in header files.
-#    define SK_ENABLE_INST_COUNT !defined(SKIA_DLL)
-#  else
-#    define SK_ENABLE_INST_COUNT 0
 #  endif
 #endif
 
@@ -229,26 +216,7 @@
          SK_ ## C3 ## 32_SHIFT == 24)
 #endif
 
-//////////////////////////////////////////////////////////////////////
-
-// TODO: rebaseline as needed so we can remove this flag entirely.
-//  - all platforms have int64_t now
-//  - we have slightly different fixed math results because of this check
-//    since we don't define this for linux/android
-#if defined(SK_BUILD_FOR_WIN32) || defined(SK_BUILD_FOR_MAC)
-#  ifndef SkLONGLONG
-#    define SkLONGLONG int64_t
-#  endif
-#endif
-
 //////////////////////////////////////////////////////////////////////////////////////////////
-#ifndef SK_BUILD_FOR_WINCE
-#  include <string.h>
-#  include <stdlib.h>
-#else
-#  define _CMNINTRIN_DECLARE_ONLY
-#  include "cmnintrin.h"
-#endif
 
 #if defined SK_DEBUG && defined SK_BUILD_FOR_WIN32
 #  ifdef free
@@ -293,29 +261,6 @@
 
 //////////////////////////////////////////////////////////////////////
 
-#ifndef SK_OVERRIDE
-#  if defined(_MSC_VER)
-#    define SK_OVERRIDE override
-#  elif defined(__clang__)
-     // Using __attribute__((override)) on clang does not appear to always work.
-     // Clang defaults to C++03 and warns about using override. Squelch that. Intentionally no
-     // push/pop here so all users of SK_OVERRIDE ignore the warning too. This is like passing
-     // -Wno-c++11-extensions, except that GCC won't die (because it won't see this pragma).
-#    pragma clang diagnostic ignored "-Wc++11-extensions"
-#
-#    if __has_feature(cxx_override_control)
-#      define SK_OVERRIDE override
-#    elif defined(__has_extension) && __has_extension(cxx_override_control)
-#      define SK_OVERRIDE override
-#    endif
-#  endif
-#  ifndef SK_OVERRIDE
-#    define SK_OVERRIDE
-#  endif
-#endif
-
-//////////////////////////////////////////////////////////////////////
-
 #if !defined(SK_UNUSED)
 #  define SK_UNUSED SK_ATTRIBUTE(unused)
 #endif
@@ -345,6 +290,14 @@
 #  else
 #    define SK_ALWAYS_INLINE SK_ATTRIBUTE(always_inline) inline
 #  endif
+#endif
+
+#if defined(SK_BUILD_FOR_WIN)
+    #define SK_VECTORCALL __vectorcall
+#elif defined(SK_CPU_ARM32)
+    #define SK_VECTORCALL __attribute__((pcs("aapcs-vfp")))
+#else
+    #define SK_VECTORCALL
 #endif
 
 //////////////////////////////////////////////////////////////////////
@@ -385,32 +338,13 @@
 
 //////////////////////////////////////////////////////////////////////
 
-#ifndef SK_ATOMICS_PLATFORM_H
-#  if defined(_MSC_VER)
-#    define SK_ATOMICS_PLATFORM_H "../../src/ports/SkAtomics_win.h"
+#ifndef SK_EGL
+#  if defined(SK_BUILD_FOR_ANDROID)
+#    define SK_EGL 1
 #  else
-#    define SK_ATOMICS_PLATFORM_H "../../src/ports/SkAtomics_sync.h"
+#    define SK_EGL 0
 #  endif
 #endif
-
-#ifndef SK_MUTEX_PLATFORM_H
-#  if defined(SK_BUILD_FOR_WIN)
-#    define SK_MUTEX_PLATFORM_H "../../src/ports/SkMutex_win.h"
-#  else
-#    define SK_MUTEX_PLATFORM_H "../../src/ports/SkMutex_pthread.h"
-#  endif
-#endif
-
-#ifndef SK_BARRIERS_PLATFORM_H
-#  if SK_HAS_COMPILER_FEATURE(thread_sanitizer)
-#    define SK_BARRIERS_PLATFORM_H "../../src/ports/SkBarriers_tsan.h"
-#  elif defined(SK_CPU_ARM32) || defined(SK_CPU_ARM64)
-#    define SK_BARRIERS_PLATFORM_H "../../src/ports/SkBarriers_arm.h"
-#  else
-#    define SK_BARRIERS_PLATFORM_H "../../src/ports/SkBarriers_x86.h"
-#  endif
-#endif
-
 
 //////////////////////////////////////////////////////////////////////
 
@@ -420,6 +354,12 @@
 #  define SK_GAMMA_EXPONENT (0.0f)
 #elif !defined(SK_GAMMA_EXPONENT)
 #  define SK_GAMMA_EXPONENT (2.2f)
+#endif
+
+//////////////////////////////////////////////////////////////////////
+
+#ifndef GR_TEST_UTILS
+#  define GR_TEST_UTILS 1
 #endif
 
 #endif // SkPostConfig_DEFINED

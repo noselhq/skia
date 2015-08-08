@@ -1,3 +1,7 @@
+# Copyright 2015 Google Inc.
+#
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
 # GYP file to build pathops skp clip test.
 {
   'includes': [
@@ -8,6 +12,7 @@
       'target_name': 'pathops_skpclip',
       'type': 'executable',
       'include_dirs': [
+        '../include/private',
         '../src/core',
         '../src/effects',
         '../src/lazy',
@@ -15,14 +20,14 @@
         '../src/pipe/utils',
         '../src/utils',
       ],
-      'dependencies': [ 
+      'dependencies': [
         'flags.gyp:flags',
         'skia_lib.gyp:skia_lib',
         'tools.gyp:crash_handler',
         'tools.gyp:resources',
       ],
       'sources': [
-		'../tests/PathOpsDebug.cpp',
+        '../tests/PathOpsDebug.cpp',
         '../tests/PathOpsSkpClipTest.cpp',
       ],
       'conditions': [

@@ -32,7 +32,7 @@ protected:
     SkBitmap fInputBitmap, fOutputBitmap;
     SkMatrix fMatrix;
 
-    virtual const char* onGetName() {
+    const char* onGetName() override {
         return fName.c_str();
     }
 
@@ -48,7 +48,7 @@ protected:
         return float(outputSize())/inputSize();
     }
 
-    SkIPoint onGetSize() SK_OVERRIDE {
+    SkIPoint onGetSize() override {
         return SkIPoint::Make( fOutputSize, fOutputSize );
     }
 
@@ -56,7 +56,7 @@ protected:
         fName.printf( "bitmap_scale_%s_%d_%d", name, fInputSize, fOutputSize );
     }
 
-    virtual void onPreDraw() {
+    void onPreDraw() override {
         fInputBitmap.allocN32Pixels(fInputSize, fInputSize, true);
         fInputBitmap.eraseColor(SK_ColorWHITE);
 
@@ -65,7 +65,7 @@ protected:
         fMatrix.setScale( scale(), scale() );
     }
 
-    virtual void onDraw(const int loops, SkCanvas*) {
+    void onDraw(const int loops, SkCanvas*) override {
         SkPaint paint;
         this->setupPaint(&paint);
 
@@ -88,13 +88,14 @@ class BitmapFilterScaleBench: public BitmapScaleBench {
         setName( "filter" );
     }
 protected:
-    virtual void doScaleImage() SK_OVERRIDE {
+    void doScaleImage() override {
         SkCanvas canvas( fOutputBitmap );
         SkPaint paint;
 
-        paint.setFilterLevel(SkPaint::kHigh_FilterLevel);
+        paint.setFilterQuality(kHigh_SkFilterQuality);
         fInputBitmap.notifyPixelsChanged();
-        canvas.drawBitmapMatrix( fInputBitmap, fMatrix, &paint );
+        canvas.concat(fMatrix);
+        canvas.drawBitmap(fInputBitmap, 0, 0, &paint );
     }
 private:
     typedef BitmapScaleBench INHERITED;

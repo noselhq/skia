@@ -9,6 +9,7 @@
 #include "SkObjectParser.h"
 #include "SkData.h"
 #include "SkFontDescriptor.h"
+#include "SkPath.h"
 #include "SkRRect.h"
 #include "SkShader.h"
 #include "SkStream.h"
@@ -26,7 +27,7 @@ SkString* SkObjectParser::BitmapToString(const SkBitmap& bitmap) {
     mBitmap->appendS32(bitmap.height());
 
     const char* gColorTypeStrings[] = {
-        "None", "A8", "565", "4444", "RGBA", "BGRA", "Index8"
+        "None", "A8", "565", "4444", "RGBA", "BGRA", "Index8", "G8"
     };
     SkASSERT(kLastEnum_SkColorType + 1 == SK_ARRAY_COUNT(gColorTypeStrings));
 
@@ -174,7 +175,7 @@ SkString* SkObjectParser::PathToString(const SkPath& path) {
 
     SkString* boundStr = SkObjectParser::RectToString(path.getBounds(), "    Bound: ");
 
-    if (NULL != boundStr) {
+    if (boundStr) {
         mPath->append(*boundStr);
         SkDELETE(boundStr);
     }

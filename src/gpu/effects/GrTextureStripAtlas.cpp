@@ -18,7 +18,7 @@
 #endif
 
 class GrTextureStripAtlas::Hash : public SkTDynamicHash<GrTextureStripAtlas::AtlasEntry, 
-                                                        GrTextureStripAtlas::AtlasEntry::Key> {};
+                                                        GrTextureStripAtlas::Desc> {};
 
 int32_t GrTextureStripAtlas::gCacheCount = 0;
 
@@ -35,12 +35,12 @@ GrTextureStripAtlas::Hash* GrTextureStripAtlas::GetCache() {
 
 // Remove the specified atlas from the cache
 void GrTextureStripAtlas::CleanUp(const GrContext*, void* info) {
-    SkASSERT(NULL != info);
+    SkASSERT(info);
 
     AtlasEntry* entry = static_cast<AtlasEntry*>(info);
 
     // remove the cache entry
-    GetCache()->remove(entry->fKey);
+    GetCache()->remove(entry->fDesc);
 
     // remove the actual entry
     SkDELETE(entry);
@@ -52,14 +52,12 @@ void GrTextureStripAtlas::CleanUp(const GrContext*, void* info) {
 }
 
 GrTextureStripAtlas* GrTextureStripAtlas::GetAtlas(const GrTextureStripAtlas::Desc& desc) {
-    AtlasEntry::Key key;
-    key.setKeyData(desc.asKey());
-    AtlasEntry* entry = GetCache()->find(key);
+    AtlasEntry* entry = GetCache()->find(desc);
     if (NULL == entry) {
         entry = SkNEW(AtlasEntry);
 
         entry->fAtlas = SkNEW_ARGS(GrTextureStripAtlas, (desc));
-        entry->fKey = key;
+        entry->fDesc = desc;
 
         desc.fContext->addCleanUp(CleanUp, entry);
 
@@ -80,6 +78,7 @@ GrTextureStripAtlas::GrTextureStripAtlas(GrTextureStripAtlas::Desc desc)
     , fLRUBack(NULL) {
     SkASSERT(fNumRows * fDesc.fRowHeight == fDesc.fHeight);
     this->initLRU();
+    fNormalizedYHeight = SK_Scalar1 / fDesc.fHeight;
     VALIDATE;
 }
 
@@ -91,6 +90,9 @@ int GrTextureStripAtlas::lockRow(const SkBitmap& data) {
     VALIDATE;
     if (0 == fLockedRows) {
         this->lockTexture();
+        if (!fTexture) {
+            return -1;
+        }
     }
 
     int key = data.getGenerationID();
@@ -155,13 +157,12 @@ int GrTextureStripAtlas::lockRow(const SkBitmap& data) {
 
         // Pass in the kDontFlush flag, since we know we're writing to a part of this texture
         // that is not currently in use
-        fDesc.fContext->writeTexturePixels(fTexture,
-                                           0,  rowNumber * fDesc.fRowHeight,
-                                           fDesc.fWidth, fDesc.fRowHeight,
-                                           SkImageInfo2GrPixelConfig(data.info()),
-                                           data.getPixels(),
-                                           data.rowBytes(),
-                                           GrContext::kDontFlush_PixelOpsFlag);
+        fTexture->writePixels(0,  rowNumber * fDesc.fRowHeight,
+                              fDesc.fWidth, fDesc.fRowHeight,
+                              SkImageInfo2GrPixelConfig(data.info()),
+                              data.getPixels(),
+                              data.rowBytes(),
+                              GrContext::kDontFlush_PixelOpsFlag);
     }
 
     SkASSERT(rowNumber >= 0);
@@ -190,33 +191,35 @@ GrTextureStripAtlas::AtlasRow* GrTextureStripAtlas::getLRU() {
 }
 
 void GrTextureStripAtlas::lockTexture() {
-    GrTextureParams params;
-    GrTextureDesc texDesc;
+    GrSurfaceDesc texDesc;
     texDesc.fWidth = fDesc.fWidth;
     texDesc.fHeight = fDesc.fHeight;
     texDesc.fConfig = fDesc.fConfig;
 
-    static const GrCacheID::Domain gTextureStripAtlasDomain = GrCacheID::GenerateDomain();
-    GrCacheID::Key key;
-    *key.fData32 = fCacheKey;
-    memset(key.fData32 + 1, 0, sizeof(key) - sizeof(uint32_t));
-    GrCacheID cacheID(gTextureStripAtlasDomain, key);
+    static const GrUniqueKey::Domain kDomain = GrUniqueKey::GenerateDomain();
+    GrUniqueKey key;
+    GrUniqueKey::Builder builder(&key, kDomain, 1);
+    builder[0] = static_cast<uint32_t>(fCacheKey);
+    builder.finish();
 
-    fTexture = fDesc.fContext->findAndRefTexture(texDesc, cacheID, &params);
+    fTexture = fDesc.fContext->textureProvider()->findAndRefTextureByUniqueKey(key);
     if (NULL == fTexture) {
-        fTexture = fDesc.fContext->createTexture(&params, texDesc, cacheID, NULL, 0);
+        fTexture = fDesc.fContext->textureProvider()->createTexture(texDesc, true, NULL, 0);
+        if (!fTexture) {
+            return;
+        }
+        fDesc.fContext->textureProvider()->assignUniqueKeyToTexture(key, fTexture);
         // This is a new texture, so all of our cache info is now invalid
         this->initLRU();
         fKeyTable.rewind();
     }
-    SkASSERT(NULL != fTexture);
+    SkASSERT(fTexture);
 }
 
 void GrTextureStripAtlas::unlockTexture() {
-    SkASSERT(NULL != fTexture && 0 == fLockedRows);
+    SkASSERT(fTexture && 0 == fLockedRows);
     fTexture->unref();
     fTexture = NULL;
-    fDesc.fContext->purgeCache();
 }
 
 void GrTextureStripAtlas::initLRU() {
@@ -246,8 +249,8 @@ void GrTextureStripAtlas::appendLRU(AtlasRow* row) {
 }
 
 void GrTextureStripAtlas::removeFromLRU(AtlasRow* row) {
-    SkASSERT(NULL != row);
-    if (NULL != row->fNext && NULL != row->fPrev) {
+    SkASSERT(row);
+    if (row->fNext && row->fPrev) {
         row->fPrev->fNext = row->fNext;
         row->fNext->fPrev = row->fPrev;
     } else {
@@ -342,7 +345,7 @@ void GrTextureStripAtlas::validate() {
     if (fLockedRows == 0) {
         SkASSERT(NULL == fTexture);
     } else {
-        SkASSERT(NULL != fTexture);
+        SkASSERT(fTexture);
     }
 }
 #endif

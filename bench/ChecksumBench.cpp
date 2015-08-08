@@ -35,12 +35,12 @@ public:
         }
     }
 
-    virtual bool isSuitableFor(Backend backend) SK_OVERRIDE {
+    bool isSuitableFor(Backend backend) override {
         return backend == kNonRendering_Backend;
     }
 
 protected:
-    virtual const char* onGetName() {
+    const char* onGetName() override {
         switch (fType) {
             case kChecksum_ChecksumType: return "compute_checksum";
             case kMD5_ChecksumType: return "compute_md5";
@@ -51,7 +51,7 @@ protected:
         }
     }
 
-    virtual void onDraw(const int loops, SkCanvas*) {
+    void onDraw(const int loops, SkCanvas*) override {
         switch (fType) {
             case kChecksum_ChecksumType: {
                 for (int i = 0; i < loops; i++) {

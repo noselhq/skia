@@ -1,13 +1,14 @@
-
 /*
  * Copyright 2012 Google Inc.
  *
  * Use of this source code is governed by a BSD-style license that can be
  * found in the LICENSE file.
  */
+
 #include "gm.h"
 
 #include "SkColorPriv.h"
+#include "SkPath.h"
 #include "SkShader.h"
 
 namespace skiagm {
@@ -15,7 +16,7 @@ namespace skiagm {
 class BigMatrixGM : public GM {
 public:
     BigMatrixGM() {
-        this->setBGColor(0xFF66AA99);
+        this->setBGColor(sk_tool_utils::color_to_565(0xFF66AA99));
     }
 
 protected:
@@ -77,7 +78,7 @@ protected:
                                             &s);
         paint.setShader(shader)->unref();
         paint.setAntiAlias(false);
-        paint.setFilterLevel(SkPaint::kLow_FilterLevel);
+        paint.setFilterQuality(kLow_SkFilterQuality);
         rect.setLTRB(pt.fX - small, pt.fY - small,
                      pt.fX + small, pt.fY + small);
         canvas->drawRect(rect, paint);

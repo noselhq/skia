@@ -1,4 +1,3 @@
-
 /*
  * Copyright 2011 Google Inc.
  *
@@ -14,6 +13,8 @@
 #include "SkShader.h"
 #include "SkUtils.h"
 #include "SkImageDecoder.h"
+
+#include <math.h>
 
 static void test_strokerect(SkCanvas* canvas) {
     int width = 100;
@@ -115,11 +116,6 @@ static void test_text(SkCanvas* canvas) {
     drawFadingText(canvas, str, len, x, y, paint);
 }
 
-#ifdef SK_BUILD_FOR_WIN
-// windows doesn't have roundf
-inline float roundf(float x) { return (x-floor(x))>0.5 ? ceil(x) : floor(x); }
-#endif
-
 #ifdef SK_DEBUG
 static void make_rgn(SkRegion* rgn, int left, int top, int right, int bottom,
                      int count, int32_t runs[]) {
@@ -219,7 +215,7 @@ public:
 
 protected:
     // overrides from SkEventSink
-    virtual bool onQuery(SkEvent* evt) {
+    bool onQuery(SkEvent* evt) override {
         if (SampleCode::TitleQ(*evt)) {
             SampleCode::TitleR(evt, "Regions");
             return true;
@@ -321,7 +317,7 @@ protected:
         canvas->drawPath(path, paint);
     }
 
-    virtual void onDrawContent(SkCanvas* canvas) {
+    void onDrawContent(SkCanvas* canvas) override {
         if (false) { // avoid bit rot, suppress warning
             test_strokerect(canvas);
             return;
@@ -394,12 +390,12 @@ protected:
     }
 
     virtual SkView::Click* onFindClickHandler(SkScalar x, SkScalar y,
-                                              unsigned modi) SK_OVERRIDE {
+                                              unsigned modi) override {
         return fRect.contains(SkScalarRoundToInt(x),
                               SkScalarRoundToInt(y)) ? new Click(this) : NULL;
     }
 
-    virtual bool onClick(Click* click) {
+    bool onClick(Click* click) override {
         fRect.offset(click->fICurr.fX - click->fIPrev.fX,
                      click->fICurr.fY - click->fIPrev.fY);
         this->inval(NULL);

@@ -5,13 +5,11 @@
  * found in the LICENSE file.
  */
 #include <new>
-#include "SkBBoxHierarchy.h"
-#include "SkDrawPictureCallback.h"
 #include "SkPictureData.h"
 #include "SkPictureRecord.h"
 #include "SkReadBuffer.h"
+#include "SkTextBlob.h"
 #include "SkTypeface.h"
-#include "SkTSort.h"
 #include "SkWriteBuffer.h"
 
 #if SK_SUPPORT_GPU
@@ -29,10 +27,8 @@ SkPictureData::SkPictureData(const SkPictInfo& info)
 
 void SkPictureData::initForPlayback() const {
     // ensure that the paths bounds are pre-computed
-    if (NULL != fPathHeap.get()) {
-        for (int i = 0; i < fPathHeap->count(); i++) {
-            (*fPathHeap.get())[i].updateBoundsCache();
-        }
+    for (int i = 0; i < fPaths.count(); i++) {
+        fPaths[i].updateBoundsCache();
     }
 }
 
@@ -40,66 +36,16 @@ SkPictureData::SkPictureData(const SkPictureRecord& record,
                              const SkPictInfo& info,
                              bool deepCopyOps)
     : fInfo(info) {
-#ifdef SK_DEBUG_SIZE
-    size_t overallBytes, bitmapBytes, matricesBytes,
-    paintBytes, pathBytes, pictureBytes, regionBytes;
-    int bitmaps = record.bitmaps(&bitmapBytes);
-    int matrices = record.matrices(&matricesBytes);
-    int paints = record.paints(&paintBytes);
-    int paths = record.paths(&pathBytes);
-    int pictures = record.pictures(&pictureBytes);
-    int regions = record.regions(&regionBytes);
-    SkDebugf("picture record mem used %zd (stream %zd) ", record.size(),
-             record.streamlen());
-    if (bitmaps != 0)
-        SkDebugf("bitmaps size %zd (bitmaps:%d) ", bitmapBytes, bitmaps);
-    if (matrices != 0)
-        SkDebugf("matrices size %zd (matrices:%d) ", matricesBytes, matrices);
-    if (paints != 0)
-        SkDebugf("paints size %zd (paints:%d) ", paintBytes, paints);
-    if (paths != 0)
-        SkDebugf("paths size %zd (paths:%d) ", pathBytes, paths);
-    if (pictures != 0)
-        SkDebugf("pictures size %zd (pictures:%d) ", pictureBytes, pictures);
-    if (regions != 0)
-        SkDebugf("regions size %zd (regions:%d) ", regionBytes, regions);
-    if (record.fPointWrites != 0)
-        SkDebugf("points size %zd (points:%d) ", record.fPointBytes, record.fPointWrites);
-    if (record.fRectWrites != 0)
-        SkDebugf("rects size %zd (rects:%d) ", record.fRectBytes, record.fRectWrites);
-    if (record.fTextWrites != 0)
-        SkDebugf("text size %zd (text strings:%d) ", record.fTextBytes, record.fTextWrites);
-
-    SkDebugf("\n");
-#endif
-#ifdef SK_DEBUG_DUMP
-    record.dumpMatrices();
-    record.dumpPaints();
-#endif
 
     this->init();
 
     fOpData = record.opData(deepCopyOps);
 
-    fBoundingHierarchy = record.fBoundingHierarchy;
-    fStateTree = record.fStateTree;
-
-    SkSafeRef(fBoundingHierarchy);
-    SkSafeRef(fStateTree);
     fContentInfo.set(record.fContentInfo);
 
-    if (NULL != fBoundingHierarchy) {
-        fBoundingHierarchy->flushDeferredInserts();
-    }
-
-    // copy over the refcnt dictionary to our reader
-    record.fFlattenableHeap.setupPlaybacks();
-
-    fBitmaps = record.fBitmapHeap->extractBitmaps();
-    fPaints = record.fPaints.unflattenToArray();
-
-    fBitmapHeap.reset(SkSafeRef(record.fBitmapHeap));
-    fPathHeap.reset(SkSafeRef(record.pathHeap()));
+    fBitmaps = record.fBitmaps;
+    fPaints  = record.fPaints;
+    fPaths   = record.fPaths;
 
     this->initForPlayback();
 
@@ -113,122 +59,60 @@ SkPictureData::SkPictureData(const SkPictureRecord& record,
         }
     }
 
-#ifdef SK_DEBUG_SIZE
-    int overall = fPlayback->size(&overallBytes);
-    bitmaps = fPlayback->bitmaps(&bitmapBytes);
-    paints = fPlayback->paints(&paintBytes);
-    paths = fPlayback->paths(&pathBytes);
-    pictures = fPlayback->pictures(&pictureBytes);
-    regions = fPlayback->regions(&regionBytes);
-    SkDebugf("playback size %zd (objects:%d) ", overallBytes, overall);
-    if (bitmaps != 0)
-        SkDebugf("bitmaps size %zd (bitmaps:%d) ", bitmapBytes, bitmaps);
-    if (paints != 0)
-        SkDebugf("paints size %zd (paints:%d) ", paintBytes, paints);
-    if (paths != 0)
-        SkDebugf("paths size %zd (paths:%d) ", pathBytes, paths);
-    if (pictures != 0)
-        SkDebugf("pictures size %zd (pictures:%d) ", pictureBytes, pictures);
-    if (regions != 0)
-        SkDebugf("regions size %zd (regions:%d) ", regionBytes, regions);
-    SkDebugf("\n");
-#endif
-}
-
-#ifdef SK_SUPPORT_LEGACY_PICTURE_CLONE
-SkPictureData::SkPictureData(const SkPictureData& src, SkPictCopyInfo* deepCopyInfo)
-    : fInfo(src.fInfo) {
-    this->init();
-
-    fBitmapHeap.reset(SkSafeRef(src.fBitmapHeap.get()));
-    fPathHeap.reset(SkSafeRef(src.fPathHeap.get()));
-
-    fOpData = SkSafeRef(src.fOpData);
-
-    fBoundingHierarchy = src.fBoundingHierarchy;
-    fStateTree = src.fStateTree;
-    fContentInfo.set(src.fContentInfo);
-
-    SkSafeRef(fBoundingHierarchy);
-    SkSafeRef(fStateTree);
-
-    if (deepCopyInfo) {
-        int paintCount = SafeCount(src.fPaints);
-
-        if (src.fBitmaps) {
-            fBitmaps = SkTRefArray<SkBitmap>::Create(src.fBitmaps->begin(), src.fBitmaps->count());
+    // templatize to consolidate with similar picture logic?
+    const SkTDArray<const SkTextBlob*>& blobs = record.getTextBlobRefs();
+    fTextBlobCount = blobs.count();
+    if (fTextBlobCount > 0) {
+        fTextBlobRefs = SkNEW_ARRAY(const SkTextBlob*, fTextBlobCount);
+        for (int i = 0; i < fTextBlobCount; ++i) {
+            fTextBlobRefs[i] = SkRef(blobs[i]);
         }
-
-        fPaints = SkTRefArray<SkPaint>::Create(paintCount);
-        SkASSERT(deepCopyInfo->paintData.count() == paintCount);
-        SkBitmapHeap* bmHeap = deepCopyInfo->controller.getBitmapHeap();
-        SkTypefacePlayback* tfPlayback = deepCopyInfo->controller.getTypefacePlayback();
-        for (int i = 0; i < paintCount; i++) {
-            if (deepCopyInfo->paintData[i]) {
-                deepCopyInfo->paintData[i]->unflatten<SkPaint::FlatteningTraits>(
-                    &fPaints->writableAt(i), bmHeap, tfPlayback);
-            } else {
-                // needs_deep_copy was false, so just need to assign
-                fPaints->writableAt(i) = src.fPaints->at(i);
-            }
-        }
-
-    } else {
-        fBitmaps = SkSafeRef(src.fBitmaps);
-        fPaints = SkSafeRef(src.fPaints);
     }
-
-    fPictureCount = src.fPictureCount;
-    fPictureRefs = SkNEW_ARRAY(const SkPicture*, fPictureCount);
-    for (int i = 0; i < fPictureCount; i++) {
-        if (deepCopyInfo) {
-            fPictureRefs[i] = src.fPictureRefs[i]->clone();
-        } else {
-            fPictureRefs[i] = src.fPictureRefs[i];
-            fPictureRefs[i]->ref();
+        
+    const SkTDArray<const SkImage*>& imgs = record.getImageRefs();
+    fImageCount = imgs.count();
+    if (fImageCount > 0) {
+        fImageRefs = SkNEW_ARRAY(const SkImage*, fImageCount);
+        for (int i = 0; i < fImageCount; ++i) {
+            fImageRefs[i] = SkRef(imgs[i]);
         }
     }
 }
-#endif//SK_SUPPORT_LEGACY_PICTURE_CLONE
 
 void SkPictureData::init() {
-    fBitmaps = NULL;
-    fPaints = NULL;
     fPictureRefs = NULL;
     fPictureCount = 0;
+    fTextBlobRefs = NULL;
+    fTextBlobCount = 0;
+    fImageRefs = NULL;
+    fImageCount = 0;
     fOpData = NULL;
     fFactoryPlayback = NULL;
-    fBoundingHierarchy = NULL;
-    fStateTree = NULL;
 }
 
 SkPictureData::~SkPictureData() {
     SkSafeUnref(fOpData);
-
-    SkSafeUnref(fBitmaps);
-    SkSafeUnref(fPaints);
-    SkSafeUnref(fBoundingHierarchy);
-    SkSafeUnref(fStateTree);
 
     for (int i = 0; i < fPictureCount; i++) {
         fPictureRefs[i]->unref();
     }
     SkDELETE_ARRAY(fPictureRefs);
 
+    for (int i = 0; i < fTextBlobCount; i++) {
+        fTextBlobRefs[i]->unref();
+    }
+    SkDELETE_ARRAY(fTextBlobRefs);
+    
+    for (int i = 0; i < fImageCount; i++) {
+        fImageRefs[i]->unref();
+    }
+    SkDELETE_ARRAY(fImageRefs);
+    
     SkDELETE(fFactoryPlayback);
 }
 
-void SkPictureData::dumpSize() const {
-    SkDebugf("--- picture size: ops=%d bitmaps=%d [%d] paints=%d [%d]\n",
-             fOpData->size(),
-             SafeCount(fBitmaps), SafeCount(fBitmaps) * sizeof(SkBitmap),
-             SafeCount(fPaints), SafeCount(fPaints) * sizeof(SkPaint));
-    SkDebugf("--- picture size: paths=%d\n",
-             SafeCount(fPathHeap.get()));
-}
-
 bool SkPictureData::containsBitmaps() const {
-    if (fBitmaps && fBitmaps->count() > 0) {
+    if (fBitmaps.count() > 0 || fImageCount > 0) {
         return true;
     }
     for (int i = 0; i < fPictureCount; ++i) {
@@ -287,7 +171,6 @@ void SkPictureData::WriteFactories(SkWStream* stream, const SkFactorySet& rec) {
 
     for (int i = 0; i < count; i++) {
         const char* name = SkFlattenable::FactoryToName(array[i]);
-//        SkDebugf("---- write factories [%d] %p <%s>\n", i, array[i], name);
         if (NULL == name || 0 == *name) {
             stream->writePackedUInt(0);
         } else {
@@ -310,42 +193,64 @@ void SkPictureData::WriteTypefaces(SkWStream* stream, const SkRefCntSet& rec) {
     rec.copyToArray((SkRefCnt**)array);
 
     for (int i = 0; i < count; i++) {
+#ifdef SK_PICTURE_FORCE_FONT_EMBEDDING
+        array[i]->serializeForcingEmbedding(stream);
+#else
+        // TODO: if (embedFonts) { array[i]->serializeForcingEmbedding(stream) } else
         array[i]->serialize(stream);
+#endif
     }
 }
 
 void SkPictureData::flattenToBuffer(SkWriteBuffer& buffer) const {
     int i, n;
 
-    if ((n = SafeCount(fBitmaps)) > 0) {
+    if ((n = fBitmaps.count()) > 0) {
         write_tag_size(buffer, SK_PICT_BITMAP_BUFFER_TAG, n);
         for (i = 0; i < n; i++) {
-            buffer.writeBitmap((*fBitmaps)[i]);
+            buffer.writeBitmap(fBitmaps[i]);
         }
     }
 
-    if ((n = SafeCount(fPaints)) > 0) {
+    if ((n = fPaints.count()) > 0) {
         write_tag_size(buffer, SK_PICT_PAINT_BUFFER_TAG, n);
         for (i = 0; i < n; i++) {
-            buffer.writePaint((*fPaints)[i]);
+            buffer.writePaint(fPaints[i]);
         }
     }
 
-    if ((n = SafeCount(fPathHeap.get())) > 0) {
+    if ((n = fPaths.count()) > 0) {
         write_tag_size(buffer, SK_PICT_PATH_BUFFER_TAG, n);
-        fPathHeap->flatten(buffer);
+        buffer.writeInt(n);
+        for (int i = 0; i < n; i++) {
+            buffer.writePath(fPaths[i]);
+        }
+    }
+
+    if (fTextBlobCount > 0) {
+        write_tag_size(buffer, SK_PICT_TEXTBLOB_BUFFER_TAG, fTextBlobCount);
+        for (i = 0; i  < fTextBlobCount; ++i) {
+            fTextBlobRefs[i]->flatten(buffer);
+        }
+    }
+    
+    if (fImageCount > 0) {
+        write_tag_size(buffer, SK_PICT_IMAGE_BUFFER_TAG, fImageCount);
+        for (i = 0; i  < fImageCount; ++i) {
+            buffer.writeImage(fImageRefs[i]);
+        }
     }
 }
 
 void SkPictureData::serialize(SkWStream* stream,
-                                  SkPicture::EncodeBitmap encoder) const {
+                              SkPixelSerializer* pixelSerializer) const {
     write_tag_size(stream, SK_PICT_READER_TAG, fOpData->size());
     stream->write(fOpData->bytes(), fOpData->size());
 
     if (fPictureCount > 0) {
         write_tag_size(stream, SK_PICT_PICTURE_TAG, fPictureCount);
         for (int i = 0; i < fPictureCount; i++) {
-            fPictureRefs[i]->serialize(stream, encoder);
+            fPictureRefs[i]->serialize(stream, pixelSerializer);
         }
     }
 
@@ -358,7 +263,7 @@ void SkPictureData::serialize(SkWStream* stream,
         SkWriteBuffer buffer(SkWriteBuffer::kCrossProcess_Flag);
         buffer.setTypefaceRecorder(&typefaceSet);
         buffer.setFactoryRecorder(&factSet);
-        buffer.setBitmapEncoder(encoder);
+        buffer.setPixelSerializer(pixelSerializer);
 
         this->flattenToBuffer(buffer);
 
@@ -432,27 +337,16 @@ bool SkPictureData::parseStreamTag(SkStream* stream,
     SkDEBUGCODE(bool haveBuffer = false;)
 
     switch (tag) {
-        case SK_PICT_READER_TAG: {
-            SkAutoMalloc storage(size);
-            if (stream->read(storage.get(), size) != size) {
+        case SK_PICT_READER_TAG:
+            SkASSERT(NULL == fOpData);
+            fOpData = SkData::NewFromStream(stream, size);
+            if (!fOpData) {
                 return false;
             }
-            SkASSERT(NULL == fOpData);
-            fOpData = SkData::NewFromMalloc(storage.detach(), size);
-        } break;
+            break;
         case SK_PICT_FACTORY_TAG: {
             SkASSERT(!haveBuffer);
-        // Remove this code when v21 and below are no longer supported. At the
-        // same time add a new 'count' variable and use it rather then reusing 'size'.
-#ifndef DISABLE_V21_COMPATIBILITY_CODE
-            if (fInfo.fVersion >= 22) {
-                // in v22 this tag's size represents the size of the chunk in bytes
-                // and the number of factory strings is written out separately
-#endif
-                size = stream->readU32();
-#ifndef DISABLE_V21_COMPATIBILITY_CODE
-            }
-#endif
+            size = stream->readU32();
             fFactoryPlayback = SkNEW_ARGS(SkFactoryPlayback, (size));
             for (size_t i = 0; i < size; i++) {
                 SkString str;
@@ -479,26 +373,14 @@ bool SkPictureData::parseStreamTag(SkStream* stream,
             }
         } break;
         case SK_PICT_PICTURE_TAG: {
-            fPictureCount = size;
-            fPictureRefs = SkNEW_ARRAY(const SkPicture*, fPictureCount);
-            bool success = true;
-            int i = 0;
-            for ( ; i < fPictureCount; i++) {
+            fPictureCount = 0;
+            fPictureRefs = SkNEW_ARRAY(const SkPicture*, size);
+            for (uint32_t i = 0; i < size; i++) {
                 fPictureRefs[i] = SkPicture::CreateFromStream(stream, proc);
-                if (NULL == fPictureRefs[i]) {
-                    success = false;
-                    break;
+                if (!fPictureRefs[i]) {
+                    return false;
                 }
-            }
-            if (!success) {
-                // Delete all of the pictures that were already created (up to but excluding i):
-                for (int j = 0; j < i; j++) {
-                    fPictureRefs[j]->unref();
-                }
-                // Delete the array
-                SkDELETE_ARRAY(fPictureRefs);
-                fPictureCount = 0;
-                return false;
+                fPictureCount++;
             }
         } break;
         case SK_PICT_BUFFER_SIZE_TAG: {
@@ -507,6 +389,7 @@ bool SkPictureData::parseStreamTag(SkStream* stream,
                 return false;
             }
 
+            /* Should we use SkValidatingReadBuffer instead? */
             SkReadBuffer buffer(storage.get(), size);
             buffer.setFlags(pictInfoFlagsToReadBufferFlags(fInfo.fFlags));
             buffer.setVersion(fInfo.fVersion);
@@ -515,12 +398,15 @@ bool SkPictureData::parseStreamTag(SkStream* stream,
             fTFPlayback.setupBuffer(buffer);
             buffer.setBitmapDecoder(proc);
 
-            while (!buffer.eof()) {
+            while (!buffer.eof() && buffer.isValid()) {
                 tag = buffer.readUInt();
                 size = buffer.readUInt();
                 if (!this->parseBufferTag(buffer, tag, size)) {
                     return false;
                 }
+            }
+            if (!buffer.isValid()) {
+                return false;
             }
             SkDEBUGCODE(haveBuffer = true;)
         } break;
@@ -528,65 +414,122 @@ bool SkPictureData::parseStreamTag(SkStream* stream,
     return true;    // success
 }
 
-bool SkPictureData::parseBufferTag(SkReadBuffer& buffer,
-                                   uint32_t tag, uint32_t size) {
+static const SkImage* create_image_from_buffer(SkReadBuffer& buffer) {
+    int width = buffer.read32();
+    int height = buffer.read32();
+    if (width <= 0 || height <= 0) {    // SkImage never has a zero dimension
+        buffer.validate(false);
+        return NULL;
+    }
+
+    SkAutoTUnref<SkData> encoded(buffer.readByteArrayAsData());
+    int originX = buffer.read32();
+    int originY = buffer.read32();
+    if (0 == encoded->size() || originX < 0 || originY < 0) {
+        buffer.validate(false);
+        return NULL;
+    }
+
+    const SkIRect subset = SkIRect::MakeXYWH(originX, originY, width, height);
+    return SkImage::NewFromEncoded(encoded, &subset);
+}
+
+// Need a shallow wrapper to return const SkPicture* to match the other factories,
+// as SkPicture::CreateFromBuffer() returns SkPicture*
+static const SkPicture* create_picture_from_buffer(SkReadBuffer& buffer) {
+    return SkPicture::CreateFromBuffer(buffer);
+}
+
+template <typename T>
+bool new_array_from_buffer(SkReadBuffer& buffer, uint32_t inCount,
+                           const T*** array, int* outCount, const T* (*factory)(SkReadBuffer&)) {
+    if (!buffer.validate((0 == *outCount) && (NULL == *array))) {
+        return false;
+    }
+    if (0 == inCount) {
+        return true;
+    }
+    *outCount = inCount;
+    *array = SkNEW_ARRAY(const T*, *outCount);
+    bool success = true;
+    int i = 0;
+    for (; i < *outCount; i++) {
+        (*array)[i] = factory(buffer);
+        if (NULL == (*array)[i]) {
+            success = false;
+            break;
+        }
+    }
+    if (!success) {
+        // Delete all of the blobs that were already created (up to but excluding i):
+        for (int j = 0; j < i; j++) {
+            (*array)[j]->unref();
+        }
+        // Delete the array
+        SkDELETE_ARRAY(*array);
+        *array = NULL;
+        *outCount = 0;
+        return false;
+    }
+    return true;
+}
+
+bool SkPictureData::parseBufferTag(SkReadBuffer& buffer, uint32_t tag, uint32_t size) {
     switch (tag) {
         case SK_PICT_BITMAP_BUFFER_TAG: {
             const int count = SkToInt(size);
-            fBitmaps = SkTRefArray<SkBitmap>::Create(size);
+            fBitmaps.reset(count);
             for (int i = 0; i < count; ++i) {
-                SkBitmap* bm = &fBitmaps->writableAt(i);
-                buffer.readBitmap(bm);
-                bm->setImmutable();
+                SkBitmap* bm = &fBitmaps[i];
+                if (buffer.readBitmap(bm)) {
+                    bm->setImmutable();
+                } else {
+                    return false;
+                }
             }
         } break;
         case SK_PICT_PAINT_BUFFER_TAG: {
             const int count = SkToInt(size);
-            fPaints = SkTRefArray<SkPaint>::Create(size);
+            fPaints.reset(count);
             for (int i = 0; i < count; ++i) {
-                buffer.readPaint(&fPaints->writableAt(i));
+                buffer.readPaint(&fPaints[i]);
             }
         } break;
         case SK_PICT_PATH_BUFFER_TAG:
             if (size > 0) {
-                fPathHeap.reset(SkNEW_ARGS(SkPathHeap, (buffer)));
+                const int count = buffer.readInt();
+                fPaths.reset(count);
+                for (int i = 0; i < count; i++) {
+                    buffer.readPath(&fPaths[i]);
+                }
+            } break;
+        case SK_PICT_TEXTBLOB_BUFFER_TAG:
+            if (!new_array_from_buffer(buffer, size, &fTextBlobRefs, &fTextBlobCount,
+                                       SkTextBlob::CreateFromBuffer)) {
+                return false;
+            }
+            break;
+        case SK_PICT_IMAGE_BUFFER_TAG:
+            if (!new_array_from_buffer(buffer, size, &fImageRefs, &fImageCount,
+                                       create_image_from_buffer)) {
+                return false;
             }
             break;
         case SK_PICT_READER_TAG: {
-            SkAutoMalloc storage(size);
-            if (!buffer.readByteArray(storage.get(), size) ||
+            SkAutoDataUnref data(SkData::NewUninitialized(size));
+            if (!buffer.readByteArray(data->writable_data(), size) ||
                 !buffer.validate(NULL == fOpData)) {
                 return false;
             }
             SkASSERT(NULL == fOpData);
-            fOpData = SkData::NewFromMalloc(storage.detach(), size);
+            fOpData = data.detach();
         } break;
-        case SK_PICT_PICTURE_TAG: {
-            if (!buffer.validate((0 == fPictureCount) && (NULL == fPictureRefs))) {
+        case SK_PICT_PICTURE_TAG:
+            if (!new_array_from_buffer(buffer, size, &fPictureRefs, &fPictureCount,
+                                       create_picture_from_buffer)) {
                 return false;
             }
-            fPictureCount = size;
-            fPictureRefs = SkNEW_ARRAY(const SkPicture*, fPictureCount);
-            bool success = true;
-            int i = 0;
-            for ( ; i < fPictureCount; i++) {
-                fPictureRefs[i] = SkPicture::CreateFromBuffer(buffer);
-                if (NULL == fPictureRefs[i]) {
-                    success = false;
-                    break;
-                }
-            }
-            if (!success) {
-                // Delete all of the pictures that were already created (up to but excluding i):
-                for (int j = 0; j < i; j++) {
-                    fPictureRefs[j]->unref();
-                }
-                // Delete the array
-                SkDELETE_ARRAY(fPictureRefs);
-                fPictureCount = 0;
-                return false;
-            }
-        } break;
+            break;
         default:
             // The tag was invalid.
             return false;
@@ -650,56 +593,10 @@ bool SkPictureData::parseBuffer(SkReadBuffer& buffer) {
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-const SkPicture::OperationList* SkPictureData::getActiveOps(const SkIRect& query) const {
-    if (NULL == fStateTree || NULL == fBoundingHierarchy) {
-        return NULL;
-    }
-
-    SkPicture::OperationList* activeOps = SkNEW(SkPicture::OperationList);
-
-    fBoundingHierarchy->search(query, &(activeOps->fOps));
-    if (0 != activeOps->fOps.count()) {
-        SkTQSort<SkPictureStateTree::Draw>(
-            reinterpret_cast<SkPictureStateTree::Draw**>(activeOps->fOps.begin()),
-            reinterpret_cast<SkPictureStateTree::Draw**>(activeOps->fOps.end()-1));
-    }
-
-    return activeOps;
-}
-
 #if SK_SUPPORT_GPU
 bool SkPictureData::suitableForGpuRasterization(GrContext* context, const char **reason,
-                                                    int sampleCount) const {
-    // TODO: the heuristic used here needs to be refined
-    static const int kNumPaintWithPathEffectUsesTol = 1;
-    static const int kNumAAConcavePaths = 5;
-
-    SkASSERT(fContentInfo.numAAHairlineConcavePaths() <= fContentInfo.numAAConcavePaths());
-
-    int numNonDashedPathEffects = fContentInfo.numPaintWithPathEffectUses() -
-                                  fContentInfo.numFastPathDashEffects();
-
-    bool suitableForDash = (0 == fContentInfo.numPaintWithPathEffectUses()) ||
-                           (numNonDashedPathEffects < kNumPaintWithPathEffectUsesTol
-                            && 0 == sampleCount);
-
-    bool ret = suitableForDash &&
-                    (fContentInfo.numAAConcavePaths() - fContentInfo.numAAHairlineConcavePaths())
-                    < kNumAAConcavePaths;
-    if (!ret && NULL != reason) {
-        if (!suitableForDash) {
-            if (0 != sampleCount) {
-                *reason = "Can't use multisample on dash effect.";
-            } else {
-                *reason = "Too many non dashed path effects.";
-            }
-        } else if ((fContentInfo.numAAConcavePaths() - fContentInfo.numAAHairlineConcavePaths())
-                    >= kNumAAConcavePaths)
-            *reason = "Too many anti-aliased concave paths.";
-        else
-            *reason = "Unknown reason for GPU unsuitability.";
-    }
-    return ret;
+                                                int sampleCount) const {
+    return fContentInfo.suitableForGpuRasterization(context, reason, sampleCount);
 }
 
 bool SkPictureData::suitableForGpuRasterization(GrContext* context, const char **reason,
@@ -713,514 +610,10 @@ bool SkPictureData::suitableForGpuRasterization(GrContext* context, const char *
     }
 }
 
+bool SkPictureData::suitableForLayerOptimization() const {
+    return fContentInfo.numLayers() > 0;
+}
 #endif
 ///////////////////////////////////////////////////////////////////////////////
 
-#ifdef SK_DEBUG_SIZE
-int SkPictureData::size(size_t* sizePtr) {
-    int objects = bitmaps(sizePtr);
-    objects += paints(sizePtr);
-    objects += paths(sizePtr);
-    objects += pictures(sizePtr);
-    objects += regions(sizePtr);
-    *sizePtr = fOpData.size();
-    return objects;
-}
 
-int SkPictureData::bitmaps(size_t* size) {
-    size_t result = 0;
-    for (int index = 0; index < fBitmapCount; index++) {
-     //   const SkBitmap& bitmap = fBitmaps[index];
-        result += sizeof(SkBitmap); // bitmap->size();
-    }
-    *size = result;
-    return fBitmapCount;
-}
-
-int SkPictureData::paints(size_t* size) {
-    size_t result = 0;
-    for (int index = 0; index < fPaintCount; index++) {
-    //    const SkPaint& paint = fPaints[index];
-        result += sizeof(SkPaint); // paint->size();
-    }
-    *size = result;
-    return fPaintCount;
-}
-
-int SkPictureData::paths(size_t* size) {
-    size_t result = 0;
-    for (int index = 0; index < fPathCount; index++) {
-        const SkPath& path = fPaths[index];
-        result += path.flatten(NULL);
-    }
-    *size = result;
-    return fPathCount;
-}
-#endif
-
-#ifdef SK_DEBUG_DUMP
-void SkPictureData::dumpBitmap(const SkBitmap& bitmap) const {
-    char pBuffer[DUMP_BUFFER_SIZE];
-    char* bufferPtr = pBuffer;
-    bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-        "BitmapData bitmap%p = {", &bitmap);
-    bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-        "{kWidth, %d}, ", bitmap.width());
-    bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-        "{kHeight, %d}, ", bitmap.height());
-    bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-        "{kRowBytes, %d}, ", bitmap.rowBytes());
-//        start here;
-    SkDebugf("%s{0}};\n", pBuffer);
-}
-
-void dumpMatrix(const SkMatrix& matrix) const {
-    SkMatrix defaultMatrix;
-    defaultMatrix.reset();
-    char pBuffer[DUMP_BUFFER_SIZE];
-    char* bufferPtr = pBuffer;
-    bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-        "MatrixData matrix%p = {", &matrix);
-    SkScalar scaleX = matrix.getScaleX();
-    if (scaleX != defaultMatrix.getScaleX())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kScaleX, %g}, ", SkScalarToFloat(scaleX));
-    SkScalar scaleY = matrix.getScaleY();
-    if (scaleY != defaultMatrix.getScaleY())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kScaleY, %g}, ", SkScalarToFloat(scaleY));
-    SkScalar skewX = matrix.getSkewX();
-    if (skewX != defaultMatrix.getSkewX())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kSkewX, %g}, ", SkScalarToFloat(skewX));
-    SkScalar skewY = matrix.getSkewY();
-    if (skewY != defaultMatrix.getSkewY())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kSkewY, %g}, ", SkScalarToFloat(skewY));
-    SkScalar translateX = matrix.getTranslateX();
-    if (translateX != defaultMatrix.getTranslateX())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kTranslateX, %g}, ", SkScalarToFloat(translateX));
-    SkScalar translateY = matrix.getTranslateY();
-    if (translateY != defaultMatrix.getTranslateY())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kTranslateY, %g}, ", SkScalarToFloat(translateY));
-    SkScalar perspX = matrix.getPerspX();
-    if (perspX != defaultMatrix.getPerspX())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kPerspX, %g}, ", perspX);
-    SkScalar perspY = matrix.getPerspY();
-    if (perspY != defaultMatrix.getPerspY())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kPerspY, %g}, ", perspY);
-    SkDebugf("%s{0}};\n", pBuffer);
-}
-
-void dumpPaint(const SkPaint& paint) const {
-    SkPaint defaultPaint;
-    char pBuffer[DUMP_BUFFER_SIZE];
-    char* bufferPtr = pBuffer;
-    bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-        "PaintPointers paintPtrs%p = {", &paint);
-    const SkTypeface* typeface = paint.getTypeface();
-    if (typeface != defaultPaint.getTypeface())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kTypeface, %p}, ", typeface);
-    const SkPathEffect* pathEffect = paint.getPathEffect();
-    if (pathEffect != defaultPaint.getPathEffect())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kPathEffect, %p}, ", pathEffect);
-    const SkShader* shader = paint.getShader();
-    if (shader != defaultPaint.getShader())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kShader, %p}, ", shader);
-    const SkXfermode* xfermode = paint.getXfermode();
-    if (xfermode != defaultPaint.getXfermode())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kXfermode, %p}, ", xfermode);
-    const SkMaskFilter* maskFilter = paint.getMaskFilter();
-    if (maskFilter != defaultPaint.getMaskFilter())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kMaskFilter, %p}, ", maskFilter);
-    const SkColorFilter* colorFilter = paint.getColorFilter();
-    if (colorFilter != defaultPaint.getColorFilter())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kColorFilter, %p}, ", colorFilter);
-    const SkRasterizer* rasterizer = paint.getRasterizer();
-    if (rasterizer != defaultPaint.getRasterizer())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kRasterizer, %p}, ", rasterizer);
-    const SkDrawLooper* drawLooper = paint.getLooper();
-    if (drawLooper != defaultPaint.getLooper())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kDrawLooper, %p}, ", drawLooper);
-    SkDebugf("%s{0}};\n", pBuffer);
-    bufferPtr = pBuffer;
-    bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-        "PaintScalars paintScalars%p = {", &paint);
-    SkScalar textSize = paint.getTextSize();
-    if (textSize != defaultPaint.getTextSize())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kTextSize, %g}, ", SkScalarToFloat(textSize));
-    SkScalar textScaleX = paint.getTextScaleX();
-    if (textScaleX != defaultPaint.getTextScaleX())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kTextScaleX, %g}, ", SkScalarToFloat(textScaleX));
-    SkScalar textSkewX = paint.getTextSkewX();
-    if (textSkewX != defaultPaint.getTextSkewX())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kTextSkewX, %g}, ", SkScalarToFloat(textSkewX));
-    SkScalar strokeWidth = paint.getStrokeWidth();
-    if (strokeWidth != defaultPaint.getStrokeWidth())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kStrokeWidth, %g}, ", SkScalarToFloat(strokeWidth));
-    SkScalar strokeMiter = paint.getStrokeMiter();
-    if (strokeMiter != defaultPaint.getStrokeMiter())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kStrokeMiter, %g}, ", SkScalarToFloat(strokeMiter));
-    SkDebugf("%s{0}};\n", pBuffer);
-    bufferPtr = pBuffer;
-    bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-        "PaintInts = paintInts%p = {", &paint);
-    unsigned color = paint.getColor();
-    if (color != defaultPaint.getColor())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kColor, 0x%x}, ", color);
-    unsigned flags = paint.getFlags();
-    if (flags != defaultPaint.getFlags())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kFlags, 0x%x}, ", flags);
-    int align = paint.getTextAlign();
-    if (align != defaultPaint.getTextAlign())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kAlign, 0x%x}, ", align);
-    int strokeCap = paint.getStrokeCap();
-    if (strokeCap != defaultPaint.getStrokeCap())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kStrokeCap, 0x%x}, ", strokeCap);
-    int strokeJoin = paint.getStrokeJoin();
-    if (strokeJoin != defaultPaint.getStrokeJoin())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kAlign, 0x%x}, ", strokeJoin);
-    int style = paint.getStyle();
-    if (style != defaultPaint.getStyle())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kStyle, 0x%x}, ", style);
-    int textEncoding = paint.getTextEncoding();
-    if (textEncoding != defaultPaint.getTextEncoding())
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "{kTextEncoding, 0x%x}, ", textEncoding);
-    SkDebugf("%s{0}};\n", pBuffer);
-
-    SkDebugf("PaintData paint%p = {paintPtrs%p, paintScalars%p, paintInts%p};\n",
-        &paint, &paint, &paint, &paint);
-}
-
-void SkPictureData::dumpPath(const SkPath& path) const {
-    SkDebugf("path dump unimplemented\n");
-}
-
-void SkPictureData::dumpPicture(const SkPicture& picture) const {
-    SkDebugf("picture dump unimplemented\n");
-}
-
-void SkPictureData::dumpRegion(const SkRegion& region) const {
-    SkDebugf("region dump unimplemented\n");
-}
-
-int SkPictureData::dumpDrawType(char* bufferPtr, char* buffer, DrawType drawType) {
-    return snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - buffer),
-        "k%s, ", DrawTypeToString(drawType));
-}
-
-int SkPictureData::dumpInt(char* bufferPtr, char* buffer, char* name) {
-    return snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - buffer),
-        "%s:%d, ", name, getInt());
-}
-
-int SkPictureData::dumpRect(char* bufferPtr, char* buffer, char* name) {
-    const SkRect* rect = fReader.skipRect();
-    return snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - buffer),
-        "%s:{l:%g t:%g r:%g b:%g}, ", name, SkScalarToFloat(rect.fLeft),
-        SkScalarToFloat(rect.fTop),
-        SkScalarToFloat(rect.fRight), SkScalarToFloat(rect.fBottom));
-}
-
-int SkPictureData::dumpPoint(char* bufferPtr, char* buffer, char* name) {
-    SkPoint pt;
-    getPoint(&pt);
-    return snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - buffer),
-        "%s:{x:%g y:%g}, ", name, SkScalarToFloat(pt.fX),
-        SkScalarToFloat(pt.fY));
-}
-
-void SkPictureData::dumpPointArray(char** bufferPtrPtr, char* buffer, int count) {
-    char* bufferPtr = *bufferPtrPtr;
-    const SkPoint* pts = (const SkPoint*)fReadStream.getAtPos();
-    fReadStream.skip(sizeof(SkPoint) * count);
-    bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - buffer),
-        "count:%d {", count);
-    for (int index = 0; index < count; index++)
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - buffer),
-        "{x:%g y:%g}, ", SkScalarToFloat(pts[index].fX),
-        SkScalarToFloat(pts[index].fY));
-    bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - buffer),
-        "} ");
-    *bufferPtrPtr = bufferPtr;
-}
-
-int SkPictureData::dumpPtr(char* bufferPtr, char* buffer, char* name, void* ptr) {
-    return snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - buffer),
-        "%s:%p, ", name, ptr);
-}
-
-int SkPictureData::dumpRectPtr(char* bufferPtr, char* buffer, char* name) {
-    char result;
-    fReadStream.read(&result, sizeof(result));
-    if (result)
-        return dumpRect(bufferPtr, buffer, name);
-    else
-        return snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - buffer),
-            "%s:NULL, ", name);
-}
-
-int SkPictureData::dumpScalar(char* bufferPtr, char* buffer, char* name) {
-    return snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - buffer),
-        "%s:%d, ", name, getScalar());
-}
-
-void SkPictureData::dumpText(char** bufferPtrPtr, char* buffer) {
-    char* bufferPtr = *bufferPtrPtr;
-    int length = getInt();
-    bufferPtr += dumpDrawType(bufferPtr, buffer);
-    fReadStream.skipToAlign4();
-    char* text = (char*) fReadStream.getAtPos();
-    fReadStream.skip(length);
-    bufferPtr += dumpInt(bufferPtr, buffer, "length");
-    int limit = DUMP_BUFFER_SIZE - (bufferPtr - buffer) - 2;
-    length >>= 1;
-    if (limit > length)
-        limit = length;
-    if (limit > 0) {
-        *bufferPtr++ = '"';
-        for (int index = 0; index < limit; index++) {
-            *bufferPtr++ = *(unsigned short*) text;
-            text += sizeof(unsigned short);
-        }
-        *bufferPtr++ = '"';
-    }
-    *bufferPtrPtr = bufferPtr;
-}
-
-#define DUMP_DRAWTYPE(drawType) \
-    bufferPtr += dumpDrawType(bufferPtr, buffer, drawType)
-
-#define DUMP_INT(name) \
-    bufferPtr += dumpInt(bufferPtr, buffer, #name)
-
-#define DUMP_RECT_PTR(name) \
-    bufferPtr += dumpRectPtr(bufferPtr, buffer, #name)
-
-#define DUMP_POINT(name) \
-    bufferPtr += dumpRect(bufferPtr, buffer, #name)
-
-#define DUMP_RECT(name) \
-    bufferPtr += dumpRect(bufferPtr, buffer, #name)
-
-#define DUMP_POINT_ARRAY(count) \
-    dumpPointArray(&bufferPtr, buffer, count)
-
-#define DUMP_PTR(name, ptr) \
-    bufferPtr += dumpPtr(bufferPtr, buffer, #name, (void*) ptr)
-
-#define DUMP_SCALAR(name) \
-    bufferPtr += dumpScalar(bufferPtr, buffer, #name)
-
-#define DUMP_TEXT() \
-    dumpText(&bufferPtr, buffer)
-
-void SkPictureData::dumpStream() {
-    SkDebugf("RecordStream stream = {\n");
-    DrawType drawType;
-    fReadStream.rewind();
-    char buffer[DUMP_BUFFER_SIZE], * bufferPtr;
-    while (fReadStream.read(&drawType, sizeof(drawType))) {
-        bufferPtr = buffer;
-        DUMP_DRAWTYPE(drawType);
-        switch (drawType) {
-            case CLIP_PATH: {
-                DUMP_PTR(SkPath, &getPath());
-                DUMP_INT(SkRegion::Op);
-                DUMP_INT(offsetToRestore);
-                } break;
-            case CLIP_REGION: {
-                DUMP_INT(SkRegion::Op);
-                DUMP_INT(offsetToRestore);
-            } break;
-            case CLIP_RECT: {
-                DUMP_RECT(rect);
-                DUMP_INT(SkRegion::Op);
-                DUMP_INT(offsetToRestore);
-                } break;
-            case CONCAT:
-                break;
-            case DRAW_BITMAP: {
-                DUMP_PTR(SkPaint, getPaint());
-                DUMP_PTR(SkBitmap, &getBitmap());
-                DUMP_SCALAR(left);
-                DUMP_SCALAR(top);
-                } break;
-            case DRAW_PAINT:
-                DUMP_PTR(SkPaint, getPaint());
-                break;
-            case DRAW_PATH: {
-                DUMP_PTR(SkPaint, getPaint());
-                DUMP_PTR(SkPath, &getPath());
-                } break;
-            case DRAW_PICTURE: {
-                DUMP_PTR(SkPicture, &getPicture());
-                } break;
-            case DRAW_POINTS: {
-                DUMP_PTR(SkPaint, getPaint());
-                (void)getInt(); // PointMode
-                size_t count = getInt();
-                fReadStream.skipToAlign4();
-                DUMP_POINT_ARRAY(count);
-                } break;
-            case DRAW_POS_TEXT: {
-                DUMP_PTR(SkPaint, getPaint());
-                DUMP_TEXT();
-                size_t points = getInt();
-                fReadStream.skipToAlign4();
-                DUMP_POINT_ARRAY(points);
-                } break;
-            case DRAW_POS_TEXT_H: {
-                DUMP_PTR(SkPaint, getPaint());
-                DUMP_TEXT();
-                size_t points = getInt();
-                fReadStream.skipToAlign4();
-                DUMP_SCALAR(top);
-                DUMP_SCALAR(bottom);
-                DUMP_SCALAR(constY);
-                DUMP_POINT_ARRAY(points);
-                } break;
-            case DRAW_RECT: {
-                DUMP_PTR(SkPaint, getPaint());
-                DUMP_RECT(rect);
-                } break;
-            case DRAW_SPRITE: {
-                DUMP_PTR(SkPaint, getPaint());
-                DUMP_PTR(SkBitmap, &getBitmap());
-                DUMP_SCALAR(left);
-                DUMP_SCALAR(top);
-                } break;
-            case DRAW_TEXT: {
-                DUMP_PTR(SkPaint, getPaint());
-                DUMP_TEXT();
-                DUMP_SCALAR(x);
-                DUMP_SCALAR(y);
-                } break;
-            case DRAW_TEXT_ON_PATH: {
-                DUMP_PTR(SkPaint, getPaint());
-                DUMP_TEXT();
-                DUMP_PTR(SkPath, &getPath());
-                } break;
-            case RESTORE:
-                break;
-            case ROTATE:
-                DUMP_SCALAR(rotate);
-                break;
-            case SAVE:
-                DUMP_INT(SkCanvas::SaveFlags);
-                break;
-            case SAVE_LAYER: {
-                DUMP_RECT_PTR(layer);
-                DUMP_PTR(SkPaint, getPaint());
-                DUMP_INT(SkCanvas::SaveFlags);
-                } break;
-            case SCALE: {
-                DUMP_SCALAR(sx);
-                DUMP_SCALAR(sy);
-                } break;
-            case SKEW: {
-                DUMP_SCALAR(sx);
-                DUMP_SCALAR(sy);
-                } break;
-            case TRANSLATE: {
-                DUMP_SCALAR(dx);
-                DUMP_SCALAR(dy);
-                } break;
-            default:
-                SkASSERT(0);
-        }
-        SkDebugf("%s\n", buffer);
-    }
-}
-
-void SkPictureData::dump() const {
-    char pBuffer[DUMP_BUFFER_SIZE];
-    char* bufferPtr = pBuffer;
-    int index;
-    if (fBitmapCount > 0)
-        SkDebugf("// bitmaps (%d)\n", fBitmapCount);
-    for (index = 0; index < fBitmapCount; index++) {
-        const SkBitmap& bitmap = fBitmaps[index];
-        dumpBitmap(bitmap);
-    }
-    if (fBitmapCount > 0)
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "Bitmaps bitmaps = {");
-    for (index = 0; index < fBitmapCount; index++)
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "bitmap%p, ", &fBitmaps[index]);
-    if (fBitmapCount > 0)
-        SkDebugf("%s0};\n", pBuffer);
-
-
-    if (fPaintCount > 0)
-        SkDebugf("// paints (%d)\n", fPaintCount);
-    for (index = 0; index < fPaintCount; index++) {
-        const SkPaint& paint = fPaints[index];
-        dumpPaint(paint);
-    }
-    bufferPtr = pBuffer;
-    if (fPaintCount > 0)
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "Paints paints = {");
-    for (index = 0; index < fPaintCount; index++)
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "paint%p, ", &fPaints[index]);
-    if (fPaintCount > 0)
-        SkDebugf("%s0};\n", pBuffer);
-
-    for (index = 0; index < fPathCount; index++) {
-        const SkPath& path = fPaths[index];
-        dumpPath(path);
-    }
-    bufferPtr = pBuffer;
-    if (fPathCount > 0)
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "Paths paths = {");
-    for (index = 0; index < fPathCount; index++)
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "path%p, ", &fPaths[index]);
-    if (fPathCount > 0)
-        SkDebugf("%s0};\n", pBuffer);
-
-    for (index = 0; index < fPictureCount; index++) {
-        dumpPicture(*fPictureRefs[index]);
-    }
-    bufferPtr = pBuffer;
-    if (fPictureCount > 0)
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "Pictures pictures = {");
-    for (index = 0; index < fPictureCount; index++)
-        bufferPtr += snprintf(bufferPtr, DUMP_BUFFER_SIZE - (bufferPtr - pBuffer),
-            "picture%p, ", fPictureRefs[index]);
-    if (fPictureCount > 0)
-        SkDebugf("%s0};\n", pBuffer);
-
-    const_cast<SkPictureData*>(this)->dumpStream();
-}
-
-#endif
